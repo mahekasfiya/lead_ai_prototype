@@ -1,0 +1,1217 @@
+{
+  "service_regions": [
+    {
+      "region": "United Arab Emirates",
+      "country_code": "AE",
+      "priority": 1,
+      "coverage_type": "office_and_core_market"
+    },
+    {
+      "region": "India",
+      "country_code": "IN",
+      "priority": 1,
+      "coverage_type": "office_and_core_market"
+    },
+    {
+      "region": "United Kingdom",
+      "country_code": "GB",
+      "priority": 1,
+      "coverage_type": "office_and_core_market"
+    },
+    {
+      "region": "United States",
+      "country_code": "US",
+      "priority": 1,
+      "coverage_type": "office_and_core_market"
+    },
+    {
+      "region": "Saudi Arabia",
+      "country_code": "SA",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Oman",
+      "country_code": "OM",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Kuwait",
+      "country_code": "KW",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Singapore",
+      "country_code": "SG",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Malaysia",
+      "country_code": "MY",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Sri Lanka",
+      "country_code": "LK",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "South Africa",
+      "country_code": "ZA",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Australia",
+      "country_code": "AU",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Germany",
+      "country_code": "DE",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Canada",
+      "country_code": "CA",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Japan",
+      "country_code": "JP",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "South Korea",
+      "country_code": "KR",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Russia",
+      "country_code": "RU",
+      "priority": 2,
+      "coverage_type": "served_market"
+    },
+    {
+      "region": "Spain",
+      "country_code": "ES",
+      "priority": 2,
+      "coverage_type": "served_market"
+    }
+  ],
+  "services": [
+    {
+      "service_id": "SVC-001",
+      "category": "Cloud Services",
+      "service_name": "Cloud Migration",
+      "description": "Migration of enterprise workloads to AWS, Azure, GCP, Red Hat OpenShift, hybrid cloud, or private cloud environments with minimal disruption.",
+      "problems_solved": [
+        "Legacy infrastructure",
+        "Limited scalability",
+        "High on-premise maintenance burden",
+        "Business continuity risk",
+        "Cloud migration complexity"
+      ],
+      "capabilities": [
+        "Cloud migration planning",
+        "Hybrid and full-cloud deployment",
+        "Secure workload migration",
+        "Disaster recovery support",
+        "Post-migration optimization"
+      ],
+      "technologies": [
+        "AWS",
+        "Microsoft Azure",
+        "Google Cloud Platform",
+        "Red Hat OpenShift"
+      ],
+      "target_industries": [
+        "Banking and Financial Services",
+        "Government",
+        "Healthcare",
+        "Insurance",
+        "Corporate",
+        "Manufacturing"
+      ],
+      "search_keywords": [
+        "cloud migration",
+        "hybrid cloud",
+        "AWS migration",
+        "Azure migration",
+        "GCP migration",
+        "OpenShift migration",
+        "data center modernization"
+      ],
+      "buying_signals": [
+        "Company announces data center exit or modernization",
+        "Company hires cloud architects or migration engineers",
+        "Company launches digital transformation programme",
+        "Company publishes cloud migration tender or RFP",
+        "Company reports business continuity or scalability issues"
+      ],
+      "evidence_phrases": [
+        "migrating workloads to cloud",
+        "hybrid cloud strategy",
+        "cloud modernization",
+        "data center consolidation",
+        "cloud transformation"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-002",
+      "category": "Cloud Services",
+      "service_name": "Cloud Monitoring and Cost Optimization",
+      "description": "Proactive cloud monitoring, governance, performance management, availability assurance, security oversight, and cloud cost control.",
+      "problems_solved": [
+        "Cloud overspending",
+        "Poor cloud visibility",
+        "Performance instability",
+        "Weak governance",
+        "Unplanned downtime"
+      ],
+      "capabilities": [
+        "Cloud monitoring",
+        "Availability monitoring",
+        "Cost optimization",
+        "Governance",
+        "Operational efficiency improvement"
+      ],
+      "technologies": [
+        "AWS",
+        "Microsoft Azure"
+      ],
+      "target_industries": [
+        "Banking and Financial Services",
+        "Government",
+        "Healthcare",
+        "Insurance",
+        "Corporate"
+      ],
+      "search_keywords": [
+        "cloud cost optimization",
+        "FinOps",
+        "cloud monitoring",
+        "cloud governance",
+        "cloud observability"
+      ],
+      "buying_signals": [
+        "Company announces cloud cost reduction initiative",
+        "Company hires FinOps or cloud operations staff",
+        "Company reports cloud outages or rising infrastructure costs",
+        "Tender requests managed cloud operations"
+      ],
+      "evidence_phrases": [
+        "reduce cloud spend",
+        "cloud governance framework",
+        "cloud operations support",
+        "improve cloud availability"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-003",
+      "category": "Managed IT Services",
+      "service_name": "Infrastructure Monitoring and Incident Management",
+      "description": "Round-the-clock monitoring, issue detection, incident handling, system change management, and operational support for enterprise IT environments.",
+      "problems_solved": [
+        "Frequent downtime",
+        "Slow incident response",
+        "Lack of IT visibility",
+        "Unstructured support operations",
+        "High support workload"
+      ],
+      "capabilities": [
+        "24/7 monitoring",
+        "Incident management",
+        "System change support",
+        "Operational automation",
+        "Service continuity"
+      ],
+      "technologies": [
+        "Microsoft",
+        "VMware",
+        "Fortinet",
+        "Sophos"
+      ],
+      "target_industries": [
+        "Aviation",
+        "Hospitality",
+        "Government",
+        "Insurance",
+        "Manufacturing",
+        "Corporate"
+      ],
+      "search_keywords": [
+        "managed IT services",
+        "infrastructure monitoring",
+        "IT operations support",
+        "incident management",
+        "network AMC",
+        "data center AMC"
+      ],
+      "buying_signals": [
+        "Company seeks IT managed service provider",
+        "Company issues network or data center AMC tender",
+        "Company reports repeated outages",
+        "Company hires NOC or infrastructure support team",
+        "Company opens new office or facility"
+      ],
+      "evidence_phrases": [
+        "24x7 infrastructure support",
+        "managed services tender",
+        "network annual maintenance",
+        "data center support"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-004",
+      "category": "Software and Virtualization",
+      "service_name": "Enterprise Software Implementation",
+      "description": "Implementation and support of enterprise-grade software, ERP, CRM, analytics, portals, and custom applications.",
+      "problems_solved": [
+        "Manual business processes",
+        "Fragmented enterprise systems",
+        "Poor data visibility",
+        "Legacy applications",
+        "Low process efficiency"
+      ],
+      "capabilities": [
+        "ERP implementation",
+        "CRM implementation",
+        "Custom portals",
+        "Enterprise application support",
+        "Analytics integration"
+      ],
+      "technologies": [
+        "Zoho",
+        "Microsoft",
+        "Triway Dynamic CRM",
+        "GitHub",
+        "Jira"
+      ],
+      "target_industries": [
+        "Corporate",
+        "Government",
+        "Hospitality",
+        "Retail",
+        "Insurance",
+        "Manufacturing"
+      ],
+      "search_keywords": [
+        "ERP implementation",
+        "CRM implementation",
+        "enterprise software",
+        "custom portal development",
+        "business application modernization"
+      ],
+      "buying_signals": [
+        "Company seeks ERP or CRM implementation partner",
+        "Company replaces legacy business systems",
+        "Company announces process digitization",
+        "Company hires enterprise applications team"
+      ],
+      "evidence_phrases": [
+        "ERP modernization",
+        "CRM transformation",
+        "customer portal project",
+        "enterprise application rollout"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-005",
+      "category": "Software and Virtualization",
+      "service_name": "Infrastructure Automation and Virtualization",
+      "description": "Virtualized enterprise environments with automated infrastructure management to improve efficiency, control, and scalability.",
+      "problems_solved": [
+        "Manual infrastructure administration",
+        "Underutilized resources",
+        "Slow provisioning",
+        "Configuration inconsistency",
+        "Poor scalability"
+      ],
+      "capabilities": [
+        "Virtualization",
+        "Automated infrastructure management",
+        "Provisioning automation",
+        "Operational control"
+      ],
+      "technologies": [
+        "VMware",
+        "Microsoft",
+        "AWS",
+        "Azure"
+      ],
+      "target_industries": [
+        "Corporate",
+        "Government",
+        "Banking and Financial Services",
+        "Insurance",
+        "Manufacturing"
+      ],
+      "search_keywords": [
+        "infrastructure automation",
+        "VMware modernization",
+        "virtualization project",
+        "automated provisioning",
+        "private cloud"
+      ],
+      "buying_signals": [
+        "Company refreshes virtualization platform",
+        "Company seeks infrastructure automation",
+        "Company consolidates servers or data centers",
+        "Company hires DevOps or platform engineers"
+      ],
+      "evidence_phrases": [
+        "virtualization refresh",
+        "automated provisioning",
+        "infrastructure as code",
+        "server consolidation"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-006",
+      "category": "Design Services",
+      "service_name": "UI/UX and Product Design",
+      "description": "User-centered UI/UX, product design, reusable design systems, and experience optimization for web, mobile, and enterprise platforms.",
+      "problems_solved": [
+        "Poor user experience",
+        "Low digital adoption",
+        "Inconsistent interfaces",
+        "Slow design-to-development handoff",
+        "Weak accessibility"
+      ],
+      "capabilities": [
+        "UI/UX design",
+        "Product design",
+        "Design systems",
+        "Experience optimization",
+        "Accessibility improvement"
+      ],
+      "technologies": [],
+      "target_industries": [
+        "Banking and Financial Services",
+        "Government",
+        "Hospitality",
+        "Retail",
+        "Insurance",
+        "Corporate"
+      ],
+      "search_keywords": [
+        "UI UX redesign",
+        "digital product design",
+        "design system",
+        "mobile app redesign",
+        "customer experience optimization"
+      ],
+      "buying_signals": [
+        "Company launches or redesigns customer portal",
+        "Company announces mobile app revamp",
+        "Company reports low digital adoption",
+        "Company hires product designers or UX researchers"
+      ],
+      "evidence_phrases": [
+        "website redesign",
+        "mobile app revamp",
+        "design system implementation",
+        "improve digital customer experience"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-007",
+      "category": "Testing and Quality Assurance",
+      "service_name": "Functional, Automation and Security Testing",
+      "description": "Structured testing services covering business workflows, automated test frameworks, performance, reliability, and application security.",
+      "problems_solved": [
+        "Software defects",
+        "Slow release cycles",
+        "Low test coverage",
+        "Application vulnerabilities",
+        "Unreliable business workflows"
+      ],
+      "capabilities": [
+        "Functional testing",
+        "Automation testing",
+        "Security testing",
+        "Test coverage improvement",
+        "Release-cycle reduction"
+      ],
+      "technologies": [
+        "Jira",
+        "GitHub"
+      ],
+      "target_industries": [
+        "Banking and Financial Services",
+        "Government",
+        "Insurance",
+        "Healthcare",
+        "Corporate"
+      ],
+      "search_keywords": [
+        "software testing services",
+        "test automation",
+        "QA outsourcing",
+        "security testing",
+        "application testing"
+      ],
+      "buying_signals": [
+        "Company accelerates software releases",
+        "Company hires QA automation engineers",
+        "Company reports production defects",
+        "Company issues testing services RFP",
+        "Company modernizes core applications"
+      ],
+      "evidence_phrases": [
+        "test automation framework",
+        "QA transformation",
+        "application security testing",
+        "release quality improvement"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-008",
+      "category": "Cybersecurity",
+      "service_name": "Vulnerability Assessment and Penetration Testing",
+      "description": "Assessment of systems, networks, web applications, mobile applications, configurations, and source code through simulated attacks and security reviews.",
+      "problems_solved": [
+        "Unknown vulnerabilities",
+        "Weak application security",
+        "Misconfigurations",
+        "Audit-readiness gaps",
+        "Cyber risk exposure"
+      ],
+      "capabilities": [
+        "Web application penetration testing",
+        "Mobile application penetration testing",
+        "Network penetration testing",
+        "Configuration review",
+        "Source code review",
+        "Security maturity assessment"
+      ],
+      "technologies": [],
+      "target_industries": [
+        "Government and Defense",
+        "Banking and Financial Services",
+        "Insurance",
+        "Healthcare",
+        "Manufacturing",
+        "Public Sector",
+        "IT and Start-ups"
+      ],
+      "search_keywords": [
+        "VAPT",
+        "penetration testing",
+        "vulnerability assessment",
+        "web app pentest",
+        "mobile app pentest",
+        "source code review"
+      ],
+      "buying_signals": [
+        "Company preparing for compliance audit",
+        "Company launches internet-facing application",
+        "Company experiences breach or vulnerability disclosure",
+        "Tender requests penetration testing",
+        "Company seeks security maturity assessment"
+      ],
+      "evidence_phrases": [
+        "penetration testing RFP",
+        "security assessment tender",
+        "application security review",
+        "vulnerability remediation"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-009",
+      "category": "Cybersecurity",
+      "service_name": "SOC as a Service and Managed Security",
+      "description": "24/7 security monitoring, threat detection, reporting, incident handling, response coordination, and proactive mitigation through managed SOC operations.",
+      "problems_solved": [
+        "No continuous security monitoring",
+        "Alert overload",
+        "Slow threat detection",
+        "Limited security staffing",
+        "Weak incident coordination"
+      ],
+      "capabilities": [
+        "SOC as a Service",
+        "SOC design and implementation",
+        "Monitoring and reporting",
+        "Incident handling",
+        "Security team training"
+      ],
+      "technologies": [
+        "Fortinet",
+        "Sophos",
+        "GOCYBEX"
+      ],
+      "target_industries": [
+        "Government and Defense",
+        "Banking and Financial Services",
+        "Insurance",
+        "Healthcare",
+        "Manufacturing",
+        "Public Sector",
+        "IT and Start-ups"
+      ],
+      "search_keywords": [
+        "SOC as a Service",
+        "managed SOC",
+        "managed security services",
+        "24x7 security monitoring",
+        "SIEM monitoring"
+      ],
+      "buying_signals": [
+        "Company hires SOC analysts",
+        "Company announces SOC establishment",
+        "Company suffers security incident",
+        "Company seeks 24/7 monitoring",
+        "Company has compliance requirement for centralized monitoring"
+      ],
+      "evidence_phrases": [
+        "SOC RFP",
+        "managed detection and response",
+        "24/7 threat monitoring",
+        "security operations center"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-010",
+      "category": "Cybersecurity",
+      "service_name": "Compliance Consulting and Security Auditing",
+      "description": "Cybersecurity policy reviews, control assessments, audit readiness, risk analysis, and compliance support for ISO 27001, NIST, PCI-DSS, UAE NESA, and related frameworks.",
+      "problems_solved": [
+        "Compliance gaps",
+        "Audit failure risk",
+        "Weak security governance",
+        "Missing policies",
+        "Unclear cyber risk priorities"
+      ],
+      "capabilities": [
+        "Compliance auditing",
+        "Policy development",
+        "Risk analysis",
+        "Audit readiness",
+        "Security governance consulting"
+      ],
+      "technologies": [],
+      "target_industries": [
+        "Government and Defense",
+        "Banking and Financial Services",
+        "Insurance",
+        "Healthcare",
+        "Public Sector",
+        "Corporate"
+      ],
+      "search_keywords": [
+        "ISO 27001 consulting",
+        "NIST assessment",
+        "PCI DSS compliance",
+        "UAE NESA compliance",
+        "cybersecurity audit"
+      ],
+      "buying_signals": [
+        "Company announces certification programme",
+        "Company faces new regulatory requirement",
+        "Company prepares for external audit",
+        "Company creates GRC or compliance role",
+        "Company seeks cyber insurance"
+      ],
+      "evidence_phrases": [
+        "ISO 27001 implementation",
+        "PCI DSS audit",
+        "NESA compliance",
+        "cyber risk assessment",
+        "security policy development"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-011",
+      "category": "Cybersecurity",
+      "service_name": "Incident Response and Digital Forensics",
+      "description": "Incident response planning and execution, digital evidence collection, forensic investigation, eDiscovery, cybercrime investigation, and legal support.",
+      "problems_solved": [
+        "Security breach",
+        "Insufficient incident evidence",
+        "Poor response readiness",
+        "Unclear attack scope",
+        "Legal or regulatory investigation needs"
+      ],
+      "capabilities": [
+        "Incident response",
+        "Digital evidence collection",
+        "Forensic analysis",
+        "eDiscovery",
+        "Cybercrime investigation",
+        "Cyber lab support"
+      ],
+      "technologies": [
+        "GOCYBEX"
+      ],
+      "target_industries": [
+        "Government and Defense",
+        "Banking and Financial Services",
+        "Insurance",
+        "Healthcare",
+        "Corporate"
+      ],
+      "search_keywords": [
+        "incident response services",
+        "digital forensics",
+        "cyber investigation",
+        "eDiscovery",
+        "breach response"
+      ],
+      "buying_signals": [
+        "Company reports cyberattack or ransomware",
+        "Company requests forensic investigation",
+        "Company appoints breach response partner",
+        "Regulator requires incident investigation"
+      ],
+      "evidence_phrases": [
+        "forensic investigation",
+        "breach containment",
+        "digital evidence",
+        "ransomware response",
+        "incident response retainer"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-012",
+      "category": "Cybersecurity",
+      "service_name": "Security Awareness and Training",
+      "description": "Role-based cybersecurity training, phishing simulations, SOC analyst training, ethical hacking labs, compliance workshops, LMS/VMS learning platforms, and certification programmes.",
+      "problems_solved": [
+        "Employee security mistakes",
+        "Low cyber awareness",
+        "Phishing risk",
+        "Security skills shortage",
+        "Compliance training gaps"
+      ],
+      "capabilities": [
+        "Security awareness campaigns",
+        "Phishing simulation",
+        "SOC analyst training",
+        "Ethical hacking labs",
+        "Compliance workshops",
+        "Learning platform integration"
+      ],
+      "technologies": [
+        "LMS",
+        "VMS",
+        "iOS",
+        "Android"
+      ],
+      "target_industries": [
+        "Government",
+        "Banking and Financial Services",
+        "Insurance",
+        "Healthcare",
+        "Corporate",
+        "Education"
+      ],
+      "search_keywords": [
+        "cybersecurity awareness training",
+        "phishing simulation",
+        "SOC analyst training",
+        "ethical hacking lab",
+        "security LMS"
+      ],
+      "buying_signals": [
+        "Company launches staff awareness programme",
+        "Company experiences phishing incident",
+        "Company seeks compliance training",
+        "Company builds internal SOC team"
+      ],
+      "evidence_phrases": [
+        "phishing simulation",
+        "security awareness campaign",
+        "SOC analyst upskilling",
+        "cybersecurity training tender"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-013",
+      "category": "Banking and Financial Services",
+      "service_name": "Temenos Implementation, Upgrade and Modernization",
+      "description": "End-to-end Temenos Transact implementation, upgrades from R09 through R25, migration planning, TAFC-to-TAFJ transition, and platform modernization.",
+      "problems_solved": [
+        "Legacy core banking platform",
+        "Unsupported Temenos version",
+        "TAFC technical debt",
+        "Upgrade disruption risk",
+        "Platform performance limitations"
+      ],
+      "capabilities": [
+        "Temenos implementation",
+        "Version upgrades",
+        "TAFC to TAFJ migration",
+        "Migration planning",
+        "Platform modernization"
+      ],
+      "technologies": [
+        "Temenos Transact",
+        "T24",
+        "TAFC",
+        "TAFJ",
+        "jBase",
+        "Java"
+      ],
+      "target_industries": [
+        "Banking and Financial Services"
+      ],
+      "search_keywords": [
+        "Temenos upgrade",
+        "T24 implementation",
+        "TAFC to TAFJ migration",
+        "Temenos R25",
+        "core banking modernization"
+      ],
+      "buying_signals": [
+        "Bank announces core banking modernization",
+        "Bank seeks Temenos upgrade partner",
+        "Bank is running older T24 version",
+        "Bank hires Temenos or TAFJ specialists",
+        "Bank issues TAFC-to-TAFJ RFP"
+      ],
+      "evidence_phrases": [
+        "Temenos upgrade",
+        "T24 modernization",
+        "TAFC to TAFJ",
+        "core banking transformation"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-014",
+      "category": "Banking and Financial Services",
+      "service_name": "Temenos Customization and BAU Support",
+      "description": "Custom module and workflow development, jBase/Java extensibility, performance optimization, production troubleshooting, bug fixing, release management, and day-to-day Temenos support.",
+      "problems_solved": [
+        "Core banking production issues",
+        "Customization backlog",
+        "Lack of Temenos specialists",
+        "Release instability",
+        "Slow defect resolution"
+      ],
+      "capabilities": [
+        "Custom module development",
+        "Workflow customization",
+        "jBase and Java extensibility",
+        "Production support",
+        "Release management",
+        "Minor enhancements"
+      ],
+      "technologies": [
+        "Temenos Transact",
+        "T24",
+        "jBase",
+        "Java"
+      ],
+      "target_industries": [
+        "Banking and Financial Services"
+      ],
+      "search_keywords": [
+        "Temenos BAU support",
+        "T24 production support",
+        "jBase development",
+        "Temenos customization",
+        "T24 release management"
+      ],
+      "buying_signals": [
+        "Bank hires T24 production support",
+        "Bank reports COB or performance issues",
+        "Bank seeks Temenos managed services",
+        "Bank has customization or defect backlog"
+      ],
+      "evidence_phrases": [
+        "T24 BAU support",
+        "Temenos production issue",
+        "jBase customization",
+        "core banking support contract"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-015",
+      "category": "Banking and Financial Services",
+      "service_name": "Payment Hub and Financial Crime Mitigation",
+      "description": "Payment hub implementation and integration, SWIFT MX and ECC clearing support, payment workflow customization, fraud detection, AML, risk scoring, regulatory reporting, and alert workflow optimization.",
+      "problems_solved": [
+        "Legacy payment processing",
+        "SWIFT migration complexity",
+        "Fraud and AML risk",
+        "High false-positive alerts",
+        "Regulatory reporting burden"
+      ],
+      "capabilities": [
+        "Payment hub implementation",
+        "SWIFT MX integration",
+        "ECC clearing",
+        "Fraud detection",
+        "AML implementation",
+        "Risk scoring customization",
+        "Regulatory reporting"
+      ],
+      "technologies": [
+        "Temenos Payment Hub",
+        "TPH",
+        "SWIFT MX",
+        "ECC",
+        "Financial Crime Mitigation",
+        "FCM"
+      ],
+      "target_industries": [
+        "Banking and Financial Services"
+      ],
+      "search_keywords": [
+        "Temenos Payment Hub",
+        "SWIFT MX migration",
+        "payment hub implementation",
+        "AML system",
+        "fraud detection platform",
+        "FCM implementation"
+      ],
+      "buying_signals": [
+        "Bank announces payments modernization",
+        "Bank prepares for SWIFT MX transition",
+        "Bank expands AML or fraud programme",
+        "Bank seeks transaction monitoring optimization",
+        "Bank issues payment hub tender"
+      ],
+      "evidence_phrases": [
+        "SWIFT MX programme",
+        "payment modernization",
+        "AML platform upgrade",
+        "fraud monitoring transformation"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-016",
+      "category": "Banking and Financial Services",
+      "service_name": "Banking Analytics and Data Management",
+      "description": "Analytics platform implementation, dashboards, data models, data-source integration, Transact Data Hub, Data Lifecycle Management, archiving strategy, and data governance.",
+      "problems_solved": [
+        "Fragmented banking data",
+        "Poor reporting",
+        "Large dataset performance issues",
+        "Weak data governance",
+        "Inefficient data archiving"
+      ],
+      "capabilities": [
+        "Analytics implementation",
+        "Dashboard development",
+        "Data model configuration",
+        "TDH implementation",
+        "DLM",
+        "Archiving strategy",
+        "Data governance"
+      ],
+      "technologies": [
+        "Temenos Analytics",
+        "Transact Data Hub",
+        "TDH",
+        "Data Lifecycle Management",
+        "DLM"
+      ],
+      "target_industries": [
+        "Banking and Financial Services"
+      ],
+      "search_keywords": [
+        "Temenos analytics",
+        "Transact Data Hub",
+        "banking data governance",
+        "DLM implementation",
+        "banking dashboard"
+      ],
+      "buying_signals": [
+        "Bank starts enterprise data programme",
+        "Bank reports reporting or performance limitations",
+        "Bank seeks data archiving solution",
+        "Bank launches regulatory data initiative"
+      ],
+      "evidence_phrases": [
+        "banking data hub",
+        "data lifecycle management",
+        "regulatory reporting platform",
+        "analytics modernization"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-017",
+      "category": "Banking and Financial Services",
+      "service_name": "Digital Banking and API Development",
+      "description": "Custom internet and mobile banking applications, enhanced UX/UI, and REST/SOAP API development using IRIS R18 for internal and external banking integrations.",
+      "problems_solved": [
+        "Outdated digital banking channels",
+        "Poor customer experience",
+        "Limited integration capability",
+        "Legacy point-to-point interfaces",
+        "Slow partner onboarding"
+      ],
+      "capabilities": [
+        "Internet banking development",
+        "Mobile banking development",
+        "REST APIs",
+        "SOAP APIs",
+        "Core banking integration",
+        "UX/UI enhancement"
+      ],
+      "technologies": [
+        "IRIS R18",
+        "REST",
+        "SOAP",
+        "Temenos Transact"
+      ],
+      "target_industries": [
+        "Banking and Financial Services"
+      ],
+      "search_keywords": [
+        "digital banking platform",
+        "mobile banking app",
+        "Temenos IRIS",
+        "banking API development",
+        "open banking integration"
+      ],
+      "buying_signals": [
+        "Bank launches mobile banking transformation",
+        "Bank publishes open banking API programme",
+        "Bank seeks API integration partner",
+        "Bank redesigns internet banking"
+      ],
+      "evidence_phrases": [
+        "mobile banking revamp",
+        "open banking APIs",
+        "digital channel modernization",
+        "banking API gateway"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-018",
+      "category": "Banking and Financial Services",
+      "service_name": "Performance Tuning and Health Checks",
+      "description": "Application, COB, architecture, load, and system health assessments to improve platform performance and validate sizing.",
+      "problems_solved": [
+        "Slow COB processing",
+        "Application performance degradation",
+        "Capacity bottlenecks",
+        "Poor sizing validation",
+        "Unstable core banking operations"
+      ],
+      "capabilities": [
+        "Application tuning",
+        "COB performance tuning",
+        "System health assessment",
+        "Load testing",
+        "Sizing validation"
+      ],
+      "technologies": [
+        "Temenos Transact",
+        "T24"
+      ],
+      "target_industries": [
+        "Banking and Financial Services"
+      ],
+      "search_keywords": [
+        "T24 performance tuning",
+        "COB tuning",
+        "Temenos health check",
+        "core banking load testing",
+        "Temenos sizing assessment"
+      ],
+      "buying_signals": [
+        "Bank reports slow COB processing",
+        "Bank experiences core banking performance issues",
+        "Bank plans major user or transaction growth",
+        "Bank seeks independent health check"
+      ],
+      "evidence_phrases": [
+        "COB performance issue",
+        "Temenos health assessment",
+        "core banking load test",
+        "T24 performance optimization"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-019",
+      "category": "AI and Automation",
+      "service_name": "Generative AI, Agentic AI and Automation",
+      "description": "AI integration, generative AI, agentic AI, and intelligent process automation for enterprise use cases.",
+      "problems_solved": [
+        "Manual repetitive work",
+        "Slow decision-making",
+        "High operational effort",
+        "Disconnected workflows",
+        "Limited use of enterprise data"
+      ],
+      "capabilities": [
+        "Generative AI integration",
+        "Agentic AI",
+        "Workflow automation",
+        "Operational automation",
+        "AI-enabled applications"
+      ],
+      "technologies": [
+        "Generative AI",
+        "Agentic AI",
+        "Automation"
+      ],
+      "target_industries": [
+        "Banking and Financial Services",
+        "Government",
+        "Insurance",
+        "Healthcare",
+        "Corporate"
+      ],
+      "search_keywords": [
+        "generative AI implementation",
+        "agentic AI",
+        "enterprise automation",
+        "AI integration",
+        "workflow automation"
+      ],
+      "buying_signals": [
+        "Company announces AI transformation programme",
+        "Company creates AI centre of excellence",
+        "Company seeks process automation",
+        "Company hires AI engineers or automation specialists"
+      ],
+      "evidence_phrases": [
+        "enterprise GenAI",
+        "agentic workflow",
+        "AI automation initiative",
+        "intelligent process automation"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+      "service_id": "SVC-020",
+      "category": "Business Solutions",
+      "service_name": "E-Invoicing",
+      "description": "Fast, secure, and compliant electronic invoicing and billing solutions.",
+      "problems_solved": [
+        "Manual invoicing",
+        "Billing delays",
+        "Compliance risk",
+        "Invoice processing errors"
+      ],
+      "capabilities": [
+        "Electronic invoicing",
+        "Secure billing",
+        "Compliance-aligned invoicing",
+        "Invoice process digitization"
+      ],
+      "technologies": [],
+      "target_industries": [
+        "Corporate",
+        "Retail",
+        "Government",
+        "Hospitality",
+        "Manufacturing"
+      ],
+      "search_keywords": [
+        "e-invoicing implementation",
+        "electronic invoicing",
+        "invoice automation",
+        "digital billing compliance"
+      ],
+      "buying_signals": [
+        "Company prepares for e-invoicing regulation",
+        "Company replaces manual billing process",
+        "Company seeks invoice automation platform"
+      ],
+      "evidence_phrases": [
+        "e-invoicing mandate",
+        "electronic billing project",
+        "invoice automation"
+      ],
+      "region_policy": "company_service_regions"
+    },
+    {
+  "service_id": "SVC-021",
+  "category": "Cybersecurity",
+  "service_name": "Privileged Access Management Implementation",
+  "description": "Implementation, configuration, integration, and support of privileged access management and identity security solutions.",
+  "problems_solved": [
+    "Uncontrolled privileged accounts",
+    "Shared administrator credentials",
+    "Lack of privileged session monitoring",
+    "Weak access governance",
+    "Credential theft risk"
+  ],
+  "capabilities": [
+    "CyberArk implementation",
+    "PAM deployment",
+    "Vault configuration",
+    "Privileged account discovery",
+    "Session monitoring",
+    "Credential rotation",
+    "Access governance integration",
+    "Identity security consulting"
+  ],
+  "technologies": [
+    "CyberArk",
+    "PAM",
+    "Privileged Access Management",
+    "IAM",
+    "Identity Security"
+  ],
+  "target_industries": [
+    "Banking and Financial Services",
+    "Government",
+    "Healthcare",
+    "Insurance",
+    "Corporate"
+  ],
+  "search_keywords": [
+    "CyberArk implementation",
+    "PAM deployment",
+    "privileged access management",
+    "privileged accounts",
+    "vault configuration",
+    "identity security",
+    "access governance",
+    "IAM consulting"
+  ],
+  "buying_signals": [
+    "Company seeks CyberArk implementation partner",
+    "Company launches privileged access management programme",
+    "Company hires CyberArk engineers",
+    "Company starts identity security modernization",
+    "Company requires privileged account governance"
+  ],
+  "evidence_phrases": [
+    "CyberArk implementation consultancy",
+    "CyberArk PAM deployment",
+    "privileged access management implementation",
+    "vault configuration",
+    "identity security integration",
+    "access governance support"
+  ],
+  "region_policy": "company_service_regions"
+}
+  ]
+}

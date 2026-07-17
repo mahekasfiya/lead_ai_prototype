@@ -1,46 +1,46 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, status
+from google import genai  # new package
 
 from module_2.local_provider import LocalEmbeddingProvider
 from module_2.validate_embeddings import (
     EmbeddingValidationError,
     validate_embedding_file,
 )
-from module_3.schemas import (
-    AnalyzeLeadRequest,
-    AnalyzeLeadResponse,
-)
-from module_3.service import LeadAnalysisService
-from module_3.discovery.discovery_service import (
-    LeadDiscoveryService,
-)
+from module_3.discovery.discovery_service import LeadDiscoveryService
 from module_3.schemas import (
     AnalyzeLeadRequest,
     AnalyzeLeadResponse,
     DiscoverLeadsRequest,
     DiscoverLeadsResponse,
 )
+from module_3.service import LeadAnalysisService
 
-
-
+# ------------------------------
+# Logging setup
+# ------------------------------
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s | %(levelname)s | %(message)s",
 )
-
 logger = logging.getLogger(__name__)
 
-
+# ------------------------------
+# Global service instances
+# ------------------------------
 lead_analysis_service: LeadAnalysisService | None = None
 lead_discovery_service: LeadDiscoveryService | None = None
 embedding_validation_result: dict | None = None
 
-
-
+# ------------------------------
+# Lifespan for service initialisation
+# ------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global lead_analysis_service
@@ -58,10 +58,7 @@ async def lifespan(app: FastAPI):
     )
 
     logger.info("Validating stored service embeddings.")
-
-    embedding_validation_result = validate_embedding_file(
-        provider=provider,
-    )
+    embedding_validation_result = validate_embedding_file(provider=provider)
 
     logger.info(
         "Embedding validation passed. "
@@ -71,34 +68,71 @@ async def lifespan(app: FastAPI):
         embedding_validation_result["embedding_version"],
     )
 
-    # 1. Create analysis service first
-    lead_analysis_service = LeadAnalysisService(
-        provider=provider
-    )
+    # Create analysis service
+    lead_analysis_service = LeadAnalysisService(provider=provider)
+    logger.info("Lead analysis service loaded successfully.")
 
-    logger.info(
-        "Lead analysis service loaded successfully."
-    )
+    # ------------ Gemini Setup (new API) ------------
+    gemini_api_key = os.getenv("GEMINI_API_KEY")
+    use_gemini = os.getenv("USE_GEMINI", "false").lower() == "true"
 
-    # 2. Only then create discovery service
+    llm_model = None
+    if use_gemini and gemini_api_key:
+        try:
+            # New API client
+            client = genai.Client(api_key=gemini_api_key)
+            # Create a wrapper that matches our existing interface
+            # The new API uses client.models.generate_content()
+            class GeminiWrapper:
+                def __init__(self, client):
+                    self.client = client
+
+                def generate_content(self, prompt: str):
+                    # The new API expects a model parameter
+                    response = self.client.models.generate_content(
+                        model="gemini-3.5-flash",  # or "gemini-1.5-flash"
+                        contents=prompt,
+                    )
+                    return response
+
+            llm_model = GeminiWrapper(client)
+            logger.info("Gemini model loaded successfully (gemini-3.5-flash).")
+        except Exception as e:
+            logger.error(f"Failed to load Gemini: {e}")
+            llm_model = None
+    else:
+        logger.info("Gemini disabled or API key missing. Using rule-based classifier.")
+
+    # Build the discovery config
+    discovery_config = {
+        "knowledge_base_path": Path(os.getenv("KNOWLEDGE_BASE_PATH", "data/triway_knowledge_base_v0_2_extended.json")),
+        "use_gemini": use_gemini and llm_model is not None,
+        "llm_model": llm_model,
+        "fetch_timeout": int(os.getenv("FETCH_TIMEOUT", 30)),
+        "fetch_max_size": int(os.getenv("FETCH_MAX_SIZE", 10485760)),
+        "min_buyer_score": float(os.getenv("MIN_BUYER_SCORE", 0.6)),
+        "max_provider_prob": float(os.getenv("MAX_PROVIDER_PROB", 0.4)),
+        "max_chunks": 3,
+    }
+
+    # Create discovery service with the config
     lead_discovery_service = LeadDiscoveryService(
-        analysis_service=lead_analysis_service
+        analysis_service=lead_analysis_service,
+        config=discovery_config,
     )
-
-    logger.info(
-        "Lead discovery service loaded successfully."
-    )
+    logger.info("Lead discovery service loaded successfully.")
 
     yield
 
-    logger.info(
-        "Shutting down Triway Lead Intelligence API."
-    )
-
+    # Cleanup
+    logger.info("Shutting down Triway Lead Intelligence API.")
     lead_discovery_service = None
     lead_analysis_service = None
     embedding_validation_result = None
 
+# ------------------------------
+# FastAPI app (rest unchanged)
+# ------------------------------
 app = FastAPI(
     title="Triway Lead Intelligence API",
     description=(
@@ -109,11 +143,7 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-
-@app.get(
-    "/",
-    tags=["System"],
-)
+@app.get("/", tags=["System"])
 def root() -> dict[str, str]:
     return {
         "service": "Triway Lead Intelligence API",
@@ -121,125 +151,62 @@ def root() -> dict[str, str]:
         "version": "1.0.0",
     }
 
-
-@app.get(
-    "/health",
-    tags=["System"],
-)
+@app.get("/health", tags=["System"])
 def health_check() -> dict:
-    """
-    Lightweight process health check.
-    """
     return {
         "status": "healthy",
         "model_loaded": lead_analysis_service is not None,
     }
 
-
-@app.get(
-    "/readiness",
-    tags=["System"],
-)
+@app.get("/readiness", tags=["System"])
 def readiness_check() -> dict:
-    """
-    Confirm that the model, embeddings, and analysis service
-    are fully initialized and ready to receive requests.
-    """
-    if (
-        lead_analysis_service is None
-        or embedding_validation_result is None
-    ):
+    if lead_analysis_service is None or embedding_validation_result is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Lead analysis service is not ready.",
         )
-
     return {
         "status": "ready",
         "provider": embedding_validation_result["provider"],
         "model": embedding_validation_result["model"],
         "dimension": embedding_validation_result["dimension"],
-        "service_count": embedding_validation_result[
-            "service_count"
-        ],
-        "normalized": embedding_validation_result[
-            "normalized"
-        ],
-        "embedding_version": embedding_validation_result[
-            "embedding_version"
-        ],
+        "service_count": embedding_validation_result["service_count"],
+        "normalized": embedding_validation_result["normalized"],
+        "embedding_version": embedding_validation_result["embedding_version"],
     }
 
-
-@app.post(
-    "/analyze-lead",
-    response_model=AnalyzeLeadResponse,
-    status_code=status.HTTP_200_OK,
-    tags=["Lead Analysis"],
-)
-def analyze_lead(
-    request: AnalyzeLeadRequest,
-) -> AnalyzeLeadResponse:
+@app.post("/analyze-lead", response_model=AnalyzeLeadResponse, tags=["Lead Analysis"])
+def analyze_lead(request: AnalyzeLeadRequest) -> AnalyzeLeadResponse:
     if lead_analysis_service is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Lead analysis service is not ready.",
         )
-
     try:
         return lead_analysis_service.analyze(request)
-
     except ValueError as exc:
-        logger.warning(
-            "Invalid lead analysis request: %s",
-            exc,
-        )
-
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-
+        logger.warning("Invalid lead analysis request: %s", exc)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception(
-            "Unexpected error while analyzing lead."
-        )
-
+        logger.exception("Unexpected error while analyzing lead.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Lead analysis failed due to an internal error.",
         ) from exc
-    
-@app.post(
-    "/discover-leads",
-    response_model=DiscoverLeadsResponse,
-    tags=["Lead Discovery"],
-)
-def discover_leads(
-    request: DiscoverLeadsRequest,
-) -> DiscoverLeadsResponse:
+
+@app.post("/discover-leads", response_model=DiscoverLeadsResponse, tags=["Lead Discovery"])
+def discover_leads(request: DiscoverLeadsRequest) -> DiscoverLeadsResponse:
     if lead_discovery_service is None:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Lead discovery service is not ready.",
         )
-
     try:
-        return lead_discovery_service.discover(
-            request
-        )
-
+        return lead_discovery_service.discover(request)
     except ValueError as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=str(exc),
-        ) from exc
-
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     except Exception as exc:
-        logger.exception(
-            "Unexpected error during lead discovery."
-        )
-
+        logger.exception("Unexpected error during lead discovery.")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="Lead discovery failed.",

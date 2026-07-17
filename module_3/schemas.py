@@ -1,9 +1,52 @@
 from __future__ import annotations
-
 from typing import Any
-
 from pydantic import BaseModel, Field, field_validator
+from enum import Enum
+from typing import Optional, List
 
+class DocumentType(str, Enum):
+    RFP = "rfp"
+    RFQ = "rfq"
+    EOI = "eoi"
+    TENDER = "tender"
+    PROCUREMENT_NOTICE = "procurement_notice"
+    INVITATION_TO_BID = "invitation_to_bid"
+    DIRECT_REQUIREMENT = "direct_requirement"
+    PARTNER_REQUEST = "partner_request"
+    NEWS_ABOUT_REQUIREMENT = "news_about_requirement"
+    VENDOR_SERVICE_PAGE = "vendor_service_page"
+    DIRECTORY = "directory"
+    JOB_POSTING = "job_posting"
+    TRAINING = "training"
+    ARTICLE = "article"
+    UNKNOWN = "unknown"
+
+class OrganizationRole(str, Enum):
+    BUYER = "buyer"
+    PROVIDER = "provider"
+    AGGREGATOR = "aggregator"
+    PUBLISHER = "publisher"
+    UNKNOWN = "unknown"
+
+class RequirementStatus(str, Enum):
+    OPEN = "open"
+    UPCOMING = "upcoming"
+    CLOSED = "closed"
+    EXPIRED = "expired"
+    UNCLEAR = "unclear"
+
+class QualificationResult(BaseModel):
+    document_type: DocumentType
+    is_service_requirement: bool
+    organization_role: OrganizationRole
+    requirement_status: RequirementStatus
+    buyer_intent_score: float = Field(ge=0.0, le=1.0)
+    provider_probability: float = Field(ge=0.0, le=1.0)
+    explicit_requirement: bool
+    requires_external_supplier: bool
+    evidence_quotes: List[str]
+    rejection_reasons: List[str]
+    confidence: float = Field(ge=0.0, le=1.0)
 
 class LeadProfile(BaseModel):
     """
@@ -345,6 +388,7 @@ class DiscoveredLeadResponse(BaseModel):
     top_service_id: str | None = None
     top_service_name: str | None = None
     top_service_match_percentage: float | None = None
+    qualification: Optional[QualificationResult]=None
 
 
 class DiscoverLeadsResponse(BaseModel):

@@ -254,9 +254,13 @@ if generate_clicked:
                 f"opportunities found."
             )
 
-            metric_col1, metric_col2, metric_col3, metric_col4 = (
-                st.columns(4)
-            )
+            (
+                metric_col1,
+                metric_col2,
+                metric_col3,
+                metric_col4,
+                metric_col5,
+            ) = st.columns(5)
 
             metric_col1.metric(
                 "Queries Executed",
@@ -276,6 +280,11 @@ if generate_clicked:
             metric_col4.metric(
                 "Leads Found",
                 result.get("leads_found", 0),
+            )
+
+            metric_col5.metric(
+                "Manual Review",
+                result.get("manual_review_count", 0),
             )
 
             queries = result.get(
@@ -499,6 +508,132 @@ if generate_clicked:
                                         )
 
                         st.divider()
+
+            manual_review = result.get(
+                "manual_review",
+                [],
+            )
+
+            st.subheader("Manual Review")
+
+            if not manual_review:
+                st.info(
+                    "No opportunities require manual review "
+                    "in this scan."
+                )
+
+            for index, review_item in enumerate(
+                manual_review,
+                start=1,
+            ):
+                review_type = (
+                    review_item.get("review_type")
+                    or "manual"
+                ).replace("_", " ").title()
+
+                review_title = (
+                    review_item.get("company_name")
+                    or review_item.get("source_title")
+                    or "Untitled opportunity"
+                )
+
+                suggested_similarity = review_item.get(
+                    "suggested_similarity"
+                )
+
+                if suggested_similarity is not None:
+                    expander_title = (
+                        f"#{index} {review_title} "
+                        f"— {review_type} "
+                        f"({suggested_similarity:.2f}% suggested match)"
+                    )
+                else:
+                    expander_title = (
+                        f"#{index} {review_title} "
+                        f"— {review_type}"
+                    )
+
+                with st.expander(
+                    expander_title,
+                    expanded=False,
+                ):
+                    st.warning(
+                        review_item.get(
+                            "reason",
+                            "This opportunity requires manual review.",
+                        )
+                    )
+
+                    review_col1, review_col2 = st.columns(2)
+
+                    review_col1.write(
+                        f"**Review Type:** {review_type}"
+                    )
+
+                    suggested_service_name = review_item.get(
+                        "suggested_service_name"
+                    )
+
+                    review_col2.write(
+                        f"**Suggested Service:** "
+                        f"{suggested_service_name or 'Not available'}"
+                    )
+
+                    if developer_mode:
+                        st.write(
+                            f"**Search Query:** "
+                            f"{review_item.get('search_query', '-')}"
+                        )
+
+                    st.write(
+                        f"**Company:** "
+                        f"{review_item.get('company_name') or 'Unknown'}"
+                    )
+
+                    st.write(
+                        f"**Industry:** "
+                        f"{review_item.get('industry') or 'Unknown'}"
+                    )
+
+                    st.write(
+                        f"**Country:** "
+                        f"{review_item.get('country') or 'Unknown'}"
+                    )
+
+                    source_snippet = review_item.get(
+                        "source_snippet"
+                    )
+
+                    if source_snippet:
+                        st.write(
+                            f"**Search Snippet:** {source_snippet}"
+                        )
+
+                    suggested_service_id = review_item.get(
+                        "suggested_service_id"
+                    )
+
+                    if suggested_service_id:
+                        st.write(
+                            f"**Suggested Service ID:** "
+                            f"{suggested_service_id}"
+                        )
+
+                    if suggested_similarity is not None:
+                        st.metric(
+                            "Suggested Similarity",
+                            f"{suggested_similarity:.2f}%",
+                        )
+
+                    review_source_url = review_item.get(
+                        "source_url"
+                    )
+
+                    if review_source_url:
+                        st.link_button(
+                            "Open Source for Review",
+                            review_source_url,
+                        )
 
             with st.expander(
                 "Raw Discovery Response"

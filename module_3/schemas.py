@@ -395,6 +395,24 @@ class DiscoveredLeadResponse(BaseModel):
     qualification: QualificationResult | None = None
     intelligence: LeadIntelligenceReport | None = None
 
+class ManualReviewLead(BaseModel):
+    source_title: str
+    source_url: str
+    source_snippet: str | None = None
+    search_query: str | None = None
+
+    reason: str
+
+    company_name: str | None = None
+    industry: str | None = None
+    country: str | None = None
+
+    suggested_service_id: str | None = None
+    suggested_service_name: str | None = None
+    suggested_similarity: float | None = None
+
+    review_type: str
+
 
 class DiscoverLeadsResponse(BaseModel):
     queries_executed: list[str]
@@ -405,3 +423,5 @@ class DiscoverLeadsResponse(BaseModel):
     leads: list[DiscoveredLeadResponse] = Field(
         default_factory=list
     )
+    manual_review_count: int = 0
+    manual_review: List[ManualReviewLead] = []

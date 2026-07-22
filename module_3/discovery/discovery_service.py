@@ -11,6 +11,11 @@ from app.search.serpapi import search
 from module_3.discovery.contradiction_checker import ContradictionChecker
 from module_3.discovery.deadline_checker import DeadlineChecker
 from module_3.discovery.document_fetcher import DocumentFetcher
+from module_3.discovery.gemini_lead_validator import (
+    GeminiLeadValidator,
+    LeadValidationCandidate,
+    LeadValidationDecision,
+)
 from module_3.discovery.metadata_extractor import MetadataExtractor
 from module_3.discovery.models import SearchCandidate
 from module_3.discovery.qualification_gate import QualificationGate
@@ -23,6 +28,7 @@ from module_3.schemas import (
     DiscoverLeadsResponse,
     DiscoveredLeadResponse,
     LeadProfile,
+    ManualReviewLead,
 )
 from module_3.service import LeadAnalysisService
 
@@ -474,6 +480,34 @@ class LeadDiscoveryService:
             max_chunks=config.get("max_chunks", 3),
         )
 
+        # Gemini is used only as the final verifier for locally shortlisted
+        # opportunities. It is deliberately not used for query generation or
+        # requirement classification.
+        self.gemini_validator = None
+
+        if use_gemini and llm_model is not None:
+            self.gemini_validator = GeminiLeadValidator(
+                model=llm_model,
+                batch_size=config.get("gemini_batch_size", 8),
+                max_candidates=config.get("gemini_max_candidates", 20),
+                max_excerpt_chars=config.get(
+                    "gemini_max_excerpt_chars",
+                    3000,
+                ),
+            )
+
+            logger.info(
+                "Gemini lead validator enabled. Batch size: %s | "
+                "Max candidates: %s",
+                config.get("gemini_batch_size", 8),
+                config.get("gemini_max_candidates", 20),
+            )
+        else:
+            logger.info(
+                "Gemini lead validator disabled. "
+                "Locally validated leads will be returned."
+            )
+
         self.fetcher = DocumentFetcher(
             timeout=config.get("fetch_timeout", 20),
             max_size=config.get("fetch_max_size", 10 * 1024 * 1024),
@@ -789,7 +823,13 @@ class LeadDiscoveryService:
         )
 
         discovered_leads: List[DiscoveredLeadResponse] = []
+        local_shortlist: list[dict[str, Any]] = []
+        similarity_manual_review: list[dict[str, Any]] = []
+        manual_review: list[ManualReviewLead] = []
 
+        # Local analysis remains responsible for matching each qualified
+        # opportunity to Triway services. Gemini is invoked only after this
+        # deterministic/local stage has completed.
         for candidate, doc, qualification, context in qualified_candidates:
             combined_content = "\n\n".join(
                 part
@@ -855,10 +895,182 @@ class LeadDiscoveryService:
 
             if not analysis_response.matched_services:
                 logger.info(
-                    "Skipping %s because no services matched.",
+                    "🟠 MANUAL REVIEW — SIMILARITY: %s | Candidate passed "
+                    "qualification but no service exceeded %.2f.",
                     candidate.source_url,
+                    request.minimum_similarity,
+                )
+                similarity_manual_review.append(
+                    ManualReviewLead(
+                        source_title=candidate.source_title or "",
+                        source_url=str(candidate.source_url),
+                        source_snippet=candidate.source_snippet,
+                        search_query=candidate.search_query,
+                        reason="Candidate passed qualification but no service exceeded the similarity threshold.",
+                        review_type="similarity",
+                    )
                 )
                 continue
+
+            local_shortlist.append(
+                {
+                    "candidate": candidate,
+                    "document": doc,
+                    "qualification": qualification,
+                    "context": context,
+                    "lead": lead,
+                    "analysis": analysis_response,
+                }
+            )
+
+        logger.info(
+            "Local analysis complete. Analysed: %s | "
+            "Shortlisted for Gemini: %s | Similarity manual review: %s",
+            len(qualified_candidates),
+            len(local_shortlist),
+            len(similarity_manual_review),
+        )
+
+        gemini_results = []
+
+        if self.gemini_validator and local_shortlist:
+            gemini_candidates: list[LeadValidationCandidate] = []
+
+            for index, item in enumerate(local_shortlist):
+                candidate = item["candidate"]
+                doc = item["document"]
+                qualification = item["qualification"]
+                analysis_response = item["analysis"]
+
+                matched_services: list[dict[str, Any]] = []
+
+                for match in analysis_response.matched_services:
+                    if hasattr(match, "model_dump"):
+                        match_payload = match.model_dump()
+                    elif hasattr(match, "dict"):
+                        match_payload = match.dict()
+                    else:
+                        match_payload = {
+                            "service_id": getattr(match, "service_id", None),
+                            "service_name": getattr(match, "service_name", None),
+                            "similarity_percentage": getattr(
+                                match,
+                                "similarity_percentage",
+                                0.0,
+                            ),
+                            "service_match_percentage": getattr(
+                                match,
+                                "service_match_percentage",
+                                0.0,
+                            ),
+                        }
+
+                    matched_services.append(match_payload)
+
+                document_type = getattr(
+                    qualification.document_type,
+                    "value",
+                    str(qualification.document_type),
+                )
+
+                gemini_candidates.append(
+                    LeadValidationCandidate(
+                        candidate_id=str(index),
+                        title=candidate.source_title or "",
+                        url=str(candidate.source_url),
+                        snippet=candidate.source_snippet or "",
+                        content_excerpt=doc.text or "",
+                        preliminary_company=analysis_response.company_name,
+                        preliminary_signal_type=document_type,
+                        preliminary_confidence=float(
+                            qualification.confidence or 0.0
+                        ),
+                        matched_services=matched_services,
+                        evidence=list(
+                            qualification.evidence_quotes or []
+                        ),
+                        uncertainty_reasons=list(
+                            qualification.rejection_reasons or []
+                        ),
+                    )
+                )
+
+            logger.info(
+                "Starting Gemini validation. Candidates: %s",
+                len(gemini_candidates),
+            )
+
+            gemini_results = self.gemini_validator.validate_candidates(
+                gemini_candidates
+            )
+
+        gemini_result_map = {
+            result.candidate_id: result
+            for result in gemini_results
+        }
+
+        gemini_rejected_count = 0
+        gemini_manual_review_count = 0
+
+        for index, item in enumerate(local_shortlist):
+            candidate = item["candidate"]
+            qualification = item["qualification"]
+            lead = item["lead"]
+            analysis_response = item["analysis"]
+
+            gemini_result = gemini_result_map.get(str(index))
+
+            if self.gemini_validator is None:
+                decision = LeadValidationDecision.VALID_LEAD
+                validation_reason = (
+                    "Gemini validation was disabled; local validation was used."
+                )
+            elif gemini_result is None:
+                decision = LeadValidationDecision.MANUAL_REVIEW
+                validation_reason = (
+                    "Gemini returned no validation result for this candidate."
+                )
+            else:
+                decision = gemini_result.decision
+                validation_reason = gemini_result.reason
+
+            if decision == LeadValidationDecision.NOT_A_LEAD:
+                gemini_rejected_count += 1
+                logger.info(
+                    "❌ GEMINI REJECTED: %s | Reason: %s",
+                    candidate.source_url,
+                    validation_reason,
+                )
+                continue
+            if decision == LeadValidationDecision.MANUAL_REVIEW:
+                logger.info(
+                    "🟠 GEMINI MANUAL REVIEW: %s | Reason: %s",
+                    candidate.source_url,
+                    validation_reason,
+                )
+                manual_review.append(
+                    ManualReviewLead(
+                        source_title=candidate.source_title or "",
+                        source_url=str(candidate.source_url),
+                        source_snippet=candidate.source_snippet,
+                        search_query=candidate.search_query,
+                        company_name=analysis_response.company_name,
+                        industry=analysis_response.industry,
+                        country=analysis_response.country,
+                        suggested_service_id=top_match.service_id,
+                        suggested_service_name=top_match.service_name,
+                        suggested_similarity=top_match.service_match_percentage,
+                        review_type="gemini",
+                        reason=validation_reason,
+                    )
+                )
+                continue
+
+            logger.info(
+                "✅ GEMINI VALIDATED: %s | Reason: %s",
+                candidate.source_url,
+                validation_reason,
+            )
 
             intelligence_report = self.intelligence_service.build_report(
                 lead=lead,
@@ -888,6 +1100,15 @@ class LeadDiscoveryService:
                 )
             )
 
+        logger.info(
+            "Gemini validation complete. Valid: %s | Rejected: %s | "
+            "Gemini manual review: %s | Similarity manual review: %s",
+            len(discovered_leads),
+            gemini_rejected_count,
+            gemini_manual_review_count,
+            len(similarity_manual_review),
+        )
+
         discovered_leads.sort(
             key=lambda lead: lead.top_service_match_percentage or 0.0,
             reverse=True,
@@ -900,4 +1121,12 @@ class LeadDiscoveryService:
             sources_analyzed=successful_fetches,
             leads_found=len(discovered_leads),
             leads=discovered_leads,
+            manual_review_count=(
+                len(similarity_manual_review)
+                + len(manual_review)
+            ),
+            manual_review=(
+                similarity_manual_review
+                + manual_review
+            ),
         )

@@ -114,6 +114,8 @@ async def lifespan(app: FastAPI):
         "min_buyer_score": float(os.getenv("MIN_BUYER_SCORE", 0.6)),
         "max_provider_prob": float(os.getenv("MAX_PROVIDER_PROB", 0.4)),
         "max_chunks": 3,
+        "default_queries_per_service": int(os.getenv("DEFAULT_QUERIES_PER_SERVICE", 2)),
+        "default_max_total_queries": int(os.getenv("DEFAULT_MAX_TOTAL_QUERIES", 50)),
     }
 
     # Create discovery service with the config
@@ -203,6 +205,20 @@ def discover_leads(request: DiscoverLeadsRequest) -> DiscoverLeadsResponse:
             detail="Lead discovery service is not ready.",
         )
     try:
+        logger.info(
+            "Lead discovery request | "
+            "Queries/service: %s | "
+            "Max total queries: %s | "
+            "Results/query: %s | "
+            "Minimum similarity: %.2f | "
+            "Selected services: %s",
+            request.queries_per_service,
+            request.max_total_queries,
+            request.results_per_query,
+            request.minimum_similarity,
+            len(request.selected_service_ids),
+            )
+        
         return lead_discovery_service.discover(request)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc

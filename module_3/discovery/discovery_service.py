@@ -31,7 +31,7 @@ from module_3.schemas import (
     ManualReviewLead,
 )
 from module_3.service import LeadAnalysisService
-
+from module_3.discovery.listing_page_detector import ListingPageDetector
 
 logger = logging.getLogger(__name__)
 
@@ -255,7 +255,74 @@ def normalize_url(url: str) -> str:
             "",
         )
     )
+LEAD_CONTENT_MAX_CHARS = 50_000
 
+
+def truncate_text(
+    value: str | None,
+    max_chars: int = LEAD_CONTENT_MAX_CHARS,
+) -> str:
+    """
+    Safely truncate extracted content before passing it into LeadProfile.
+
+    Keeps the beginning and end of long procurement documents because
+    requirements are usually near the beginning while deadlines and
+    submission instructions may appear near the end.
+    """
+    text = (value or "").strip()
+
+    if len(text) <= max_chars:
+        return text
+
+    separator = (
+        "\n\n[... CONTENT TRUNCATED FOR ANALYSIS ...]\n\n"
+    )
+
+    available_chars = max_chars - len(separator)
+
+    beginning_chars = int(available_chars * 0.75)
+    ending_chars = available_chars - beginning_chars
+
+    return (
+        text[:beginning_chars]
+        + separator
+        + text[-ending_chars:]
+    )
+
+def build_gemini_excerpt(
+    value: str | None,
+    max_chars: int = 1800,
+) -> str:
+    """
+    Build a compact Gemini excerpt that preserves both the beginning
+    and end of a document.
+
+    Procurement scope is commonly near the beginning, while deadlines
+    and submission instructions may appear near the end.
+    """
+    text = (value or "").strip()
+
+    if len(text) <= max_chars:
+        return text
+
+    separator = (
+        "\n\n[... DOCUMENT CONTENT OMITTED ...]\n\n"
+    )
+
+    available_chars = max_chars - len(separator)
+
+    beginning_chars = int(
+        available_chars * 0.65
+    )
+    ending_chars = (
+        available_chars - beginning_chars
+    )
+
+    return (
+        text[:beginning_chars]
+        + separator
+        + text[-ending_chars:]
+    )
 
 def normalize_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value or "").strip().lower()
@@ -460,6 +527,7 @@ class LeadDiscoveryService:
     ):
         self.analysis_service = analysis_service
         self.intelligence_service = LeadIntelligenceService()
+        self.listing_page_detector = ListingPageDetector()
 
         llm_model = config.get("llm_model")
         use_gemini = config.get("use_gemini", False)
@@ -488,24 +556,24 @@ class LeadDiscoveryService:
         if use_gemini and llm_model is not None:
             self.gemini_validator = GeminiLeadValidator(
                 model=llm_model,
-                batch_size=config.get("gemini_batch_size", 8),
-                max_candidates=config.get("gemini_max_candidates", 20),
+                batch_size=config.get("gemini_batch_size", 4),
+                max_candidates=config.get("gemini_max_candidates"),
                 max_excerpt_chars=config.get(
                     "gemini_max_excerpt_chars",
-                    3000,
+                    1800,
                 ),
             )
 
             logger.info(
                 "Gemini lead validator enabled. Batch size: %s | "
                 "Max candidates: %s",
-                config.get("gemini_batch_size", 8),
-                config.get("gemini_max_candidates", 20),
+                config.get("gemini_batch_size", 4),
+                config.get("gemini_max_candidates"),
             )
         else:
             logger.info(
                 "Gemini lead validator disabled. "
-                "Locally validated leads will be returned."
+                "Qualified candidates will be routed to manual review."
             )
 
         self.fetcher = DocumentFetcher(
@@ -532,10 +600,31 @@ class LeadDiscoveryService:
         request: DiscoverLeadsRequest,
     ) -> DiscoverLeadsResponse:
         query_records = self.query_generator.generate(
-            max_queries=request.max_queries,
+            queries_per_service=request.queries_per_service,
+            max_total_queries=request.max_total_queries,
             selected_service_ids=request.selected_service_ids,
         )
 
+        requested_query_total = (
+            len(
+                {
+                    record["service_id"]
+                    for record in query_records
+                }
+            )
+            * request.queries_per_service
+        )
+
+        logger.info(
+            "Query generation complete. Queries per service: %s | "
+            "Requested total: %s | Maximum total: %s | Generated: %s",
+            request.queries_per_service,
+            requested_query_total,
+            request.max_total_queries,
+            len(query_records),
+        )
+
+        listing_page_rejections = 0
         collected_candidates: List[SearchCandidate] = []
         candidate_context: dict[str, dict[str, Any]] = {}
         seen_urls: set[str] = set()
@@ -574,6 +663,13 @@ class LeadDiscoveryService:
                     source_domain=urlsplit(result.url).netloc,
                     search_query=record["query"],
                     service_id=record["service_id"],
+                    service_name=record.get("service_name"),
+                    source_type=record.get("source_type"),
+                    platform=record.get("platform"),
+                    intent_type=record.get("intent_type"),
+                    strategy=record.get("strategy"),
+                    strategy_order=record.get("strategy_order"),
+                    priority=record.get("priority"),
                 )
 
                 context = {
@@ -582,6 +678,7 @@ class LeadDiscoveryService:
                     "intent_type": record.get("intent_type", "procurement"),
                     "strategy": record.get("strategy", "legacy"),
                     "priority": record.get("priority", 99),
+                    "strategy_order": record.get("strategy_order"),
                     "service_name": record.get("service_name", ""),
                 }
 
@@ -617,13 +714,14 @@ class LeadDiscoveryService:
             dict(context_counts),
         )
 
-        qualified_candidates = []
+        qualified_candidates: list[dict[str, Any]] = []
         successful_fetches = 0
         failed_fetches = 0
         empty_content_count = 0
         validation_rejections = 0
         expired_rejections = 0
         gate_rejections = 0
+        manual_review: list[ManualReviewLead] = []
 
         for candidate in collected_candidates:
             context = candidate_context.get(
@@ -634,6 +732,7 @@ class LeadDiscoveryService:
                     "intent_type": "procurement",
                     "strategy": "legacy",
                     "priority": 99,
+                    "strategy_order": None,
                     "service_name": "",
                 },
             )
@@ -685,6 +784,35 @@ class LeadDiscoveryService:
             )
             logger.info("   Matched indicators: %s", matched_terms)
 
+            listing_assessment = self.listing_page_detector.assess(
+                title=candidate.source_title or "",
+                url=str(candidate.source_url),
+                text="\n\n".join(
+                    part
+                    for part in [
+                        candidate.source_snippet or "",
+                        doc.text or "",
+                    ]
+                    if part
+                ),
+            )
+            logger.info(
+                "Listing-page assessment | URL: %s | Listing: %s | "
+                "Confidence: %.2f | Reason: %s",
+                candidate.source_url,
+                listing_assessment.is_listing_page,
+                listing_assessment.confidence,
+                listing_assessment.reason,
+            )
+            if listing_assessment.is_listing_page:
+                listing_page_rejections += 1
+                logger.info(
+                    "❌ LISTING PAGE REJECTED: %s | Indicators: %s",
+                    candidate.source_url,
+                    listing_assessment.matched_indicators,
+                )
+                continue
+
             deadline_assessment = self.deadline_checker.assess(
                 title=candidate.source_title or "",
                 snippet=candidate.source_snippet or "",
@@ -706,10 +834,40 @@ class LeadDiscoveryService:
                 logger.info(
                     "❌ EXPIRED OPPORTUNITY: %s | Deadline: %s | %s",
                     candidate.source_url,
-                    deadline_assessment.deadline.isoformat() if deadline_assessment.deadline else "not explicitly dated",
+                    (
+                        deadline_assessment.deadline.isoformat()
+                        if deadline_assessment.deadline
+                        else "not explicitly dated"
+                    ),
                     deadline_assessment.reason,
                 )
                 continue
+
+            context = dict(context)
+            context.update(
+                {
+                    "deadline_status": deadline_assessment.status,
+                    "deadline": (
+                        deadline_assessment.deadline.isoformat()
+                        if deadline_assessment.deadline
+                        else None
+                    ),
+                    "deadline_reason": deadline_assessment.reason,
+                    "deadline_confidence": deadline_assessment.confidence,
+                    "deadline_matched_text": getattr(
+                        deadline_assessment,
+                        "matched_text",
+                        None,
+                    ),
+                }
+            )
+
+            if deadline_assessment.requires_manual_review:
+                logger.info(
+                    "⚠️ DEADLINE UNKNOWN — CONTINUING TO GEMINI: %s | %s",
+                    candidate.source_url,
+                    deadline_assessment.reason,
+                )
 
             qualification = self.classifier.classify(
                 doc.text,
@@ -749,7 +907,14 @@ class LeadDiscoveryService:
 
             if gate_decision.accepted:
                 qualified_candidates.append(
-                    (candidate, doc, qualification, context)
+                    {
+                        "candidate": candidate,
+                        "document": doc,
+                        "qualification": qualification,
+                        "context": context,
+                        "deadline": deadline_assessment,
+                        "listing": listing_assessment,
+                    }
                 )
                 logger.info(
                     "✅ QUALIFIED: %s | Source: %s/%s",
@@ -811,12 +976,14 @@ class LeadDiscoveryService:
         logger.info(
             "Qualification stage complete. Collected: %s | Successful fetches: %s | "
             "Failed fetches: %s | Empty content: %s | Source-validation rejections: %s | "
-            "Expired rejections: %s | Gate rejections: %s | Qualified candidates: %s",
+            "Listing-page rejections: %s | Expired rejections: %s | "
+            "Gate rejections: %s | Qualified candidates: %s",
             len(collected_candidates),
             successful_fetches,
             failed_fetches,
             empty_content_count,
             validation_rejections,
+            listing_page_rejections,
             expired_rejections,
             gate_rejections,
             len(qualified_candidates),
@@ -824,13 +991,13 @@ class LeadDiscoveryService:
 
         discovered_leads: List[DiscoveredLeadResponse] = []
         local_shortlist: list[dict[str, Any]] = []
-        similarity_manual_review: list[dict[str, Any]] = []
-        manual_review: list[ManualReviewLead] = []
-
-        # Local analysis remains responsible for matching each qualified
-        # opportunity to Triway services. Gemini is invoked only after this
-        # deterministic/local stage has completed.
-        for candidate, doc, qualification, context in qualified_candidates:
+        # Local analysis produces service evidence. It is not a rejection
+        # gate; Gemini makes the final decision for every qualified candidate.
+        for item in qualified_candidates:
+            candidate = item["candidate"]
+            doc = item["document"]
+            qualification = item["qualification"]
+            context = item["context"]
             combined_content = "\n\n".join(
                 part
                 for part in [
@@ -855,13 +1022,26 @@ class LeadDiscoveryService:
                 text=doc.text or "",
             )
 
+            analysis_content = truncate_text(
+                combined_content,
+                max_chars=LEAD_CONTENT_MAX_CHARS,
+            )
+            if len(combined_content) > LEAD_CONTENT_MAX_CHARS:
+                logger.info(
+                    "Lead content truncated for analysis | URL: %s | "
+                    "Original chars: %s | Analysis chars: %s",
+                    candidate.source_url,
+                    len(combined_content),
+                    len(analysis_content),
+                )
+
             lead = LeadProfile(
                 company_name=metadata.get("company_name"),
                 industry=metadata.get("industry"),
                 country=metadata.get("country"),
                 source_url=str(candidate.source_url),
                 summary=candidate.source_snippet or candidate.source_title or "",
-                content=combined_content,
+                content=analysis_content,
                 technologies=[],
                 projects=[],
                 signals=[],
@@ -877,11 +1057,30 @@ class LeadDiscoveryService:
                     "intent_type": context["intent_type"],
                     "strategy": context["strategy"],
                     "query_priority": context["priority"],
+                    "query_strategy_order": context.get("strategy_order"),
                     "query_service_name": context["service_name"],
                     "extracted_emails": metadata.get("emails", []),
-                    "full_text": doc.text or "",
-                    "cleaned_content": doc.text or "",
-                    "page_text": doc.text or "",
+                    "original_content_length": len(doc.text or ""),
+                    "analysis_content_length": len(analysis_content),
+                    "content_was_truncated": (
+                        len(combined_content) > LEAD_CONTENT_MAX_CHARS
+                    ),
+                    "deadline_status": context.get(
+                        "deadline_status",
+                        "unknown",
+                    ),
+                    "deadline": context.get("deadline"),
+                    "deadline_reason": context.get(
+                        "deadline_reason",
+                        "",
+                    ),
+                    "deadline_confidence": context.get(
+                        "deadline_confidence",
+                        0.0,
+                    ),
+                    "deadline_matched_text": context.get(
+                        "deadline_matched_text",
+                    ),
                 },
             )
 
@@ -889,28 +1088,38 @@ class LeadDiscoveryService:
                 AnalyzeLeadRequest(
                     lead=lead,
                     top_k=3,
-                    minimum_similarity=request.minimum_similarity,
+                    minimum_similarity=0.0,
                 )
             )
 
-            if not analysis_response.matched_services:
-                logger.info(
-                    "🟠 MANUAL REVIEW — SIMILARITY: %s | Candidate passed "
-                    "qualification but no service exceeded %.2f.",
-                    candidate.source_url,
-                    request.minimum_similarity,
-                )
-                similarity_manual_review.append(
-                    ManualReviewLead(
-                        source_title=candidate.source_title or "",
-                        source_url=str(candidate.source_url),
-                        source_snippet=candidate.source_snippet,
-                        search_query=candidate.search_query,
-                        reason="Candidate passed qualification but no service exceeded the similarity threshold.",
-                        review_type="similarity",
+            top_similarity = 0.0
+            if analysis_response.matched_services:
+                top_match_for_evidence = analysis_response.matched_services[0]
+                top_similarity = float(
+                    getattr(
+                        top_match_for_evidence,
+                        "service_match_score",
+                        getattr(
+                            top_match_for_evidence,
+                            "similarity_score",
+                            0.0,
+                        ),
                     )
+                    or 0.0
                 )
-                continue
+
+            similarity_uncertainty = None
+            if top_similarity < request.minimum_similarity:
+                similarity_uncertainty = (
+                    "No service exceeded the configured similarity threshold "
+                    f"of {request.minimum_similarity:.2f}. "
+                    f"Best local score was {top_similarity:.4f}. "
+                    "Similarity is supporting evidence only."
+                )
+
+            context = dict(context)
+            context["top_similarity"] = top_similarity
+            context["similarity_uncertainty"] = similarity_uncertainty
 
             local_shortlist.append(
                 {
@@ -918,6 +1127,8 @@ class LeadDiscoveryService:
                     "document": doc,
                     "qualification": qualification,
                     "context": context,
+                    "deadline": item["deadline"],
+                    "listing": item["listing"],
                     "lead": lead,
                     "analysis": analysis_response,
                 }
@@ -925,10 +1136,9 @@ class LeadDiscoveryService:
 
         logger.info(
             "Local analysis complete. Analysed: %s | "
-            "Shortlisted for Gemini: %s | Similarity manual review: %s",
+            "Sent to Gemini final validation: %s",
             len(qualified_candidates),
             len(local_shortlist),
-            len(similarity_manual_review),
         )
 
         gemini_results = []
@@ -941,6 +1151,7 @@ class LeadDiscoveryService:
                 doc = item["document"]
                 qualification = item["qualification"]
                 analysis_response = item["analysis"]
+                context = item["context"]
 
                 matched_services: list[dict[str, Any]] = []
 
@@ -979,7 +1190,13 @@ class LeadDiscoveryService:
                         title=candidate.source_title or "",
                         url=str(candidate.source_url),
                         snippet=candidate.source_snippet or "",
-                        content_excerpt=doc.text or "",
+                        content_excerpt=build_gemini_excerpt(
+                            doc.text,
+                            max_chars=self.config.get(
+                                "gemini_max_excerpt_chars",
+                                1800,
+                            ),
+                        ),
                         preliminary_company=analysis_response.company_name,
                         preliminary_signal_type=document_type,
                         preliminary_confidence=float(
@@ -989,8 +1206,33 @@ class LeadDiscoveryService:
                         evidence=list(
                             qualification.evidence_quotes or []
                         ),
-                        uncertainty_reasons=list(
-                            qualification.rejection_reasons or []
+                        uncertainty_reasons=[
+                            value
+                            for value in [
+                                *list(
+                                    qualification.rejection_reasons or []
+                                ),
+                                context.get("similarity_uncertainty"),
+                                (
+                                    context.get("deadline_reason")
+                                    if context.get("deadline_status") == "unknown"
+                                    else None
+                                ),
+                            ]
+                            if value
+                        ],
+                        deadline_status=context.get(
+                            "deadline_status",
+                            "unknown",
+                        ),
+                        deadline=context.get("deadline"),
+                        deadline_reason=context.get(
+                            "deadline_reason",
+                            "",
+                        ),
+                        deadline_confidence=float(
+                            context.get("deadline_confidence", 0.0)
+                            or 0.0
                         ),
                     )
                 )
@@ -1017,13 +1259,15 @@ class LeadDiscoveryService:
             qualification = item["qualification"]
             lead = item["lead"]
             analysis_response = item["analysis"]
+            context = item["context"]
 
             gemini_result = gemini_result_map.get(str(index))
 
             if self.gemini_validator is None:
-                decision = LeadValidationDecision.VALID_LEAD
+                decision = LeadValidationDecision.MANUAL_REVIEW
                 validation_reason = (
-                    "Gemini validation was disabled; local validation was used."
+                    "Gemini final validation was disabled, so this candidate "
+                    "cannot be automatically validated."
                 )
             elif gemini_result is None:
                 decision = LeadValidationDecision.MANUAL_REVIEW
@@ -1043,6 +1287,13 @@ class LeadDiscoveryService:
                 )
                 continue
             if decision == LeadValidationDecision.MANUAL_REVIEW:
+                gemini_manual_review_count += 1
+                top_match = (
+                    analysis_response.matched_services[0]
+                    if analysis_response.matched_services
+                    else None
+                )
+
                 logger.info(
                     "🟠 GEMINI MANUAL REVIEW: %s | Reason: %s",
                     candidate.source_url,
@@ -1057,11 +1308,27 @@ class LeadDiscoveryService:
                         company_name=analysis_response.company_name,
                         industry=analysis_response.industry,
                         country=analysis_response.country,
-                        suggested_service_id=top_match.service_id,
-                        suggested_service_name=top_match.service_name,
-                        suggested_similarity=top_match.service_match_percentage,
+                        suggested_service_id=(
+                            top_match.service_id if top_match else None
+                        ),
+                        suggested_service_name=(
+                            top_match.service_name if top_match else None
+                        ),
+                        suggested_similarity=(
+                            top_match.service_match_percentage
+                            if top_match
+                            else None
+                        ),
                         review_type="gemini",
                         reason=validation_reason,
+                        gemini_confidence=(
+                            gemini_result.confidence
+                            if gemini_result
+                            else None
+                        ),
+                        deadline_status=context.get("deadline_status"),
+                        deadline=context.get("deadline"),
+                        best_similarity=context.get("top_similarity"),
                     )
                 )
                 continue
@@ -1072,10 +1339,39 @@ class LeadDiscoveryService:
                 validation_reason,
             )
 
+            if not analysis_response.matched_services:
+                gemini_manual_review_count += 1
+                manual_review.append(
+                    ManualReviewLead(
+                        source_title=candidate.source_title or "",
+                        source_url=str(candidate.source_url),
+                        source_snippet=candidate.source_snippet,
+                        search_query=candidate.search_query,
+                        company_name=analysis_response.company_name,
+                        industry=analysis_response.industry,
+                        country=analysis_response.country,
+                        review_type="gemini",
+                        reason=(
+                            "Gemini marked the candidate valid, but local "
+                            "analysis produced no service match."
+                        ),
+                        gemini_confidence=(
+                            gemini_result.confidence
+                            if gemini_result
+                            else None
+                        ),
+                        deadline_status=context.get("deadline_status"),
+                        deadline=context.get("deadline"),
+                        best_similarity=context.get("top_similarity"),
+                    )
+                )
+                continue
+
             intelligence_report = self.intelligence_service.build_report(
                 lead=lead,
                 qualification=qualification,
                 analysis=analysis_response,
+                deadline=item["deadline"],
             )
 
             top_match = analysis_response.matched_services[0]
@@ -1101,12 +1397,12 @@ class LeadDiscoveryService:
             )
 
         logger.info(
-            "Gemini validation complete. Valid: %s | Rejected: %s | "
-            "Gemini manual review: %s | Similarity manual review: %s",
+            "Gemini final validation complete. Evaluated: %s | "
+            "Valid: %s | Rejected: %s | Manual review: %s",
+            len(local_shortlist),
             len(discovered_leads),
             gemini_rejected_count,
             gemini_manual_review_count,
-            len(similarity_manual_review),
         )
 
         discovered_leads.sort(
@@ -1121,12 +1417,13 @@ class LeadDiscoveryService:
             sources_analyzed=successful_fetches,
             leads_found=len(discovered_leads),
             leads=discovered_leads,
-            manual_review_count=(
-                len(similarity_manual_review)
-                + len(manual_review)
-            ),
-            manual_review=(
-                similarity_manual_review
-                + manual_review
-            ),
+            manual_review_count=len(manual_review),
+            manual_review=manual_review,
+            listing_page_rejections=listing_page_rejections,
+            expired_rejections=expired_rejections,
+            qualification_rejections=gate_rejections,
+            gemini_evaluated=len(local_shortlist),
+            gemini_validated=len(discovered_leads),
+            gemini_rejected=gemini_rejected_count,
+            gemini_manual_review=gemini_manual_review_count,
         )

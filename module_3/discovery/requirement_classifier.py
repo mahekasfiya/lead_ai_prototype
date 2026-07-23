@@ -249,10 +249,22 @@ Return only valid JSON with exactly those fields.
             "closed",
             "expired",
             "deadline has passed",
-            "no longer accepting",
             "submission period has ended",
+            "bidding has closed",
+            "bid closed",
+            "proposal period has ended",
+            "contract awarded",
+            "award notice",
+            "procurement cancelled",
+            "tender cancelled",
         ]
-        upcoming_patterns = ["upcoming", "will be issued", "planned tender"]
+        upcoming_patterns = [
+            "upcoming",
+            "planned tender",
+            "will be issued",
+            "coming soon",
+            "future procurement",
+        ]
 
         provider_score = self._weighted_score(lowered, provider_patterns)
         procurement_score = self._weighted_score(lowered, procurement_patterns)
@@ -291,8 +303,6 @@ Return only valid JSON with exactly those fields.
             status = RequirementStatus.CLOSED
         elif any(pattern in lowered for pattern in upcoming_patterns):
             status = RequirementStatus.UPCOMING
-        elif buyer_signal_score > 0:
-            status = RequirementStatus.OPEN
 
         document_type = self._document_type(
             lowered,

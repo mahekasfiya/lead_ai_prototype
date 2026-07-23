@@ -347,10 +347,18 @@ class DiscoverLeadsRequest(BaseModel):
     Controls one SerpAPI lead-discovery run.
     """
 
-    max_queries: int = Field(
-        default=5,
+    queries_per_service: int = Field(
+        default=2,
         ge=1,
-        le=20,
+        le=3,
+        description="Number of query strategies to generate per eligible service.",
+    )
+
+    max_total_queries: int = Field(
+        default=50,
+        ge=1,
+        le=100,
+        description="Hard cap across the entire discovery run.",
     )
 
     results_per_query: int = Field(
@@ -414,6 +422,11 @@ class ManualReviewLead(BaseModel):
     review_type: str
 
 
+
+    gemini_confidence: float | None = None
+    deadline_status: str | None = None
+    deadline: str | None = None
+    best_similarity: float | None = None
 class DiscoverLeadsResponse(BaseModel):
     queries_executed: list[str]
     sources_collected: int
@@ -423,5 +436,17 @@ class DiscoverLeadsResponse(BaseModel):
     leads: list[DiscoveredLeadResponse] = Field(
         default_factory=list
     )
+
     manual_review_count: int = 0
-    manual_review: List[ManualReviewLead] = []
+    manual_review: List[ManualReviewLead] = Field(
+        default_factory=list
+    )
+
+    listing_page_rejections: int = 0
+    expired_rejections: int = 0
+    qualification_rejections: int = 0
+
+    gemini_evaluated: int = 0
+    gemini_validated: int = 0
+    gemini_rejected: int = 0
+    gemini_manual_review: int = 0

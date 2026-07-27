@@ -1,16 +1,48 @@
 from __future__ import annotations
 
+# =============================================================================
+# MERGE NOTES (read before editing further)
+# -----------------------------------------------------------------------------
+# This file combines two branches of LeadDiscoveryService:
+#
+#   "Search stage" (query generation -> candidate collection -> qualification
+#   gate) is taken from the branch with queries_per_service/max_total_queries,
+#   ListingPageDetector, and richer content-truncation helpers.
+#
+#   "Extraction / email-generation stage" (local analysis -> LeadProfile ->
+#   Gemini final validation -> region filter -> response) is taken from the
+#   branch with the region filter, country-override-from-Gemini, and the
+#   raw full_text/cleaned_content/page_text metadata (kept because the
+#   email-generation endpoint likely reads these fields).
+#
+# Things to double check against your actual schemas.py / model classes
+# before running this in production:
+#   1. DiscoverLeadsRequest must expose `queries_per_service` and
+#      `max_total_queries` (not `max_queries`) -- this matches the frontend
+#      merge done earlier.
+#   2. SearchCandidate must accept the extra fields (source_type, platform,
+#      intent_type, strategy, strategy_order, priority) passed below.
+#   3. DiscoverLeadsResponse -- I added `listing_page_rejections` and
+#      `expired_rejections` to the returned object since those stats are now
+#      produced by the merged pipeline. Remove them if your schema doesn't
+#      define those fields yet (or add the fields to the schema).
+#   4. LeadIntelligenceService.build_report() and LeadValidationCandidate
+#      are NOT given the extra deadline_status/deadline/deadline_reason
+#      kwargs, even though that data is now available in `context`, because
+#      I couldn't confirm those classes accept them. If they do, it's a
+#      quick follow-up to thread `context.get("deadline_status")` etc. in.
+# =============================================================================
+
+import json
 import logging
 import re
+import time
 from collections import Counter
+from pathlib import Path
 from typing import Any, List
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.search.serpapi import search
-
-import json
-from pathlib import Path
-import time
 
 from module_3.discovery.contradiction_checker import ContradictionChecker
 from module_3.discovery.deadline_checker import DeadlineChecker
@@ -20,6 +52,7 @@ from module_3.discovery.gemini_lead_validator import (
     LeadValidationCandidate,
     LeadValidationDecision,
 )
+from module_3.discovery.listing_page_detector import ListingPageDetector
 from module_3.discovery.metadata_extractor import MetadataExtractor
 from module_3.discovery.models import SearchCandidate
 from module_3.discovery.qualification_gate import QualificationGate
@@ -35,7 +68,6 @@ from module_3.schemas import (
     ManualReviewLead,
 )
 from module_3.service import LeadAnalysisService
-
 
 logger = logging.getLogger(__name__)
 
@@ -261,6 +293,77 @@ def normalize_url(url: str) -> str:
     )
 
 
+LEAD_CONTENT_MAX_CHARS = 50_000
+
+
+def truncate_text(
+    value: str | None,
+    max_chars: int = LEAD_CONTENT_MAX_CHARS,
+) -> str:
+    """
+    Safely truncate extracted content before passing it into LeadProfile.
+
+    Keeps the beginning and end of long procurement documents because
+    requirements are usually near the beginning while deadlines and
+    submission instructions may appear near the end.
+    """
+    text = (value or "").strip()
+
+    if len(text) <= max_chars:
+        return text
+
+    separator = (
+        "\n\n[... CONTENT TRUNCATED FOR ANALYSIS ...]\n\n"
+    )
+
+    available_chars = max_chars - len(separator)
+
+    beginning_chars = int(available_chars * 0.75)
+    ending_chars = available_chars - beginning_chars
+
+    return (
+        text[:beginning_chars]
+        + separator
+        + text[-ending_chars:]
+    )
+
+
+def build_gemini_excerpt(
+    value: str | None,
+    max_chars: int = 1800,
+) -> str:
+    """
+    Build a compact Gemini excerpt that preserves both the beginning
+    and end of a document.
+
+    Procurement scope is commonly near the beginning, while deadlines
+    and submission instructions may appear near the end.
+    """
+    text = (value or "").strip()
+
+    if len(text) <= max_chars:
+        return text
+
+    separator = (
+        "\n\n[... DOCUMENT CONTENT OMITTED ...]\n\n"
+    )
+
+    available_chars = max_chars - len(separator)
+
+    beginning_chars = int(
+        available_chars * 0.65
+    )
+    ending_chars = (
+        available_chars - beginning_chars
+    )
+
+    return (
+        text[:beginning_chars]
+        + separator
+        + text[-ending_chars:]
+    )
+
+
 def normalize_text(value: str | None) -> str:
     return re.sub(r"\s+", " ", value or "").strip().lower()
 
@@ -464,10 +567,12 @@ class LeadDiscoveryService:
     ):
         self.analysis_service = analysis_service
         self.intelligence_service = LeadIntelligenceService()
+        # --- from friend's branch: listing-page detection ---
+        self.listing_page_detector = ListingPageDetector()
 
         llm_model = config.get("llm_model")
         use_gemini = config.get("use_gemini", False)
-        self.llm_model =llm_model
+        self.llm_model = llm_model
 
         self.query_generator = QueryGenerator(
             knowledge_base_path=config.get("knowledge_base_path"),
@@ -532,39 +637,72 @@ class LeadDiscoveryService:
 
         self.config = config
 
-        # Inside LeadDiscoveryService.__init__, after the config is read
-
-# Load region names from knowledge base
+        # --- from your branch: region filter, loaded from the knowledge base ---
         self.knowledge_base_path = config.get("knowledge_base_path")
         if self.knowledge_base_path:
             self.knowledge_base_path = Path(self.knowledge_base_path)
+
         self.region_names = set()
+
         if self.knowledge_base_path and self.knowledge_base_path.exists():
             try:
-                with open(self.knowledge_base_path, 'r', encoding='utf-8') as f:
+                with open(self.knowledge_base_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
-                    regions = data.get('service_regions', [])
+                    regions = data.get("service_regions", [])
                     self.region_names = {
-                        r.get('region', '').strip().lower()
+                        r.get("region", "").strip().lower()
                         for r in regions
-                        if r.get('region')
+                        if r.get("region")
                     }
-                logger.info("Loaded %s region names from knowledge base.", len(self.region_names))
+                logger.info(
+                    "Loaded %s region names from knowledge base.",
+                    len(self.region_names),
+                )
             except Exception as e:
-                logger.warning("Could not load region names from knowledge base: %s", e)
+                logger.warning(
+                    "Could not load region names from knowledge base: %s", e
+                )
                 self.region_names = set()
         else:
-            logger.warning("Knowledge base path not provided or missing; region filter disabled.")
+            logger.warning(
+                "Knowledge base path not provided or missing; region filter disabled."
+            )
 
     def discover(
         self,
         request: DiscoverLeadsRequest,
     ) -> DiscoverLeadsResponse:
+        # =====================================================================
+        # SEARCH STAGE (from friend's branch): query generation, candidate
+        # collection, source validation, listing-page detection, deadline
+        # check, and qualification gate.
+        # =====================================================================
         query_records = self.query_generator.generate(
-            max_queries=request.max_queries,
+            queries_per_service=request.queries_per_service,
+            max_total_queries=request.max_total_queries,
             selected_service_ids=request.selected_service_ids,
         )
 
+        requested_query_total = (
+            len(
+                {
+                    record["service_id"]
+                    for record in query_records
+                }
+            )
+            * request.queries_per_service
+        )
+
+        logger.info(
+            "Query generation complete. Queries per service: %s | "
+            "Requested total: %s | Maximum total: %s | Generated: %s",
+            request.queries_per_service,
+            requested_query_total,
+            request.max_total_queries,
+            len(query_records),
+        )
+
+        listing_page_rejections = 0
         collected_candidates: List[SearchCandidate] = []
         candidate_context: dict[str, dict[str, Any]] = {}
         seen_urls: set[str] = set()
@@ -603,6 +741,13 @@ class LeadDiscoveryService:
                     source_domain=urlsplit(result.url).netloc,
                     search_query=record["query"],
                     service_id=record["service_id"],
+                    service_name=record.get("service_name"),
+                    source_type=record.get("source_type"),
+                    platform=record.get("platform"),
+                    intent_type=record.get("intent_type"),
+                    strategy=record.get("strategy"),
+                    strategy_order=record.get("strategy_order"),
+                    priority=record.get("priority"),
                 )
 
                 context = {
@@ -611,6 +756,7 @@ class LeadDiscoveryService:
                     "intent_type": record.get("intent_type", "procurement"),
                     "strategy": record.get("strategy", "legacy"),
                     "priority": record.get("priority", 99),
+                    "strategy_order": record.get("strategy_order"),
                     "service_name": record.get("service_name", ""),
                 }
 
@@ -646,7 +792,7 @@ class LeadDiscoveryService:
             dict(context_counts),
         )
 
-        qualified_candidates = []
+        qualified_candidates: list[dict[str, Any]] = []
         successful_fetches = 0
         failed_fetches = 0
         empty_content_count = 0
@@ -663,6 +809,7 @@ class LeadDiscoveryService:
                     "intent_type": "procurement",
                     "strategy": "legacy",
                     "priority": 99,
+                    "strategy_order": None,
                     "service_name": "",
                 },
             )
@@ -714,6 +861,35 @@ class LeadDiscoveryService:
             )
             logger.info("   Matched indicators: %s", matched_terms)
 
+            listing_assessment = self.listing_page_detector.assess(
+                title=candidate.source_title or "",
+                url=str(candidate.source_url),
+                text="\n\n".join(
+                    part
+                    for part in [
+                        candidate.source_snippet or "",
+                        doc.text or "",
+                    ]
+                    if part
+                ),
+            )
+            logger.info(
+                "Listing-page assessment | URL: %s | Listing: %s | "
+                "Confidence: %.2f | Reason: %s",
+                candidate.source_url,
+                listing_assessment.is_listing_page,
+                listing_assessment.confidence,
+                listing_assessment.reason,
+            )
+            if listing_assessment.is_listing_page:
+                listing_page_rejections += 1
+                logger.info(
+                    "❌ LISTING PAGE REJECTED: %s | Indicators: %s",
+                    candidate.source_url,
+                    listing_assessment.matched_indicators,
+                )
+                continue
+
             deadline_assessment = self.deadline_checker.assess(
                 title=candidate.source_title or "",
                 snippet=candidate.source_snippet or "",
@@ -735,10 +911,40 @@ class LeadDiscoveryService:
                 logger.info(
                     "❌ EXPIRED OPPORTUNITY: %s | Deadline: %s | %s",
                     candidate.source_url,
-                    deadline_assessment.deadline.isoformat() if deadline_assessment.deadline else "not explicitly dated",
+                    (
+                        deadline_assessment.deadline.isoformat()
+                        if deadline_assessment.deadline
+                        else "not explicitly dated"
+                    ),
                     deadline_assessment.reason,
                 )
                 continue
+
+            context = dict(context)
+            context.update(
+                {
+                    "deadline_status": deadline_assessment.status,
+                    "deadline": (
+                        deadline_assessment.deadline.isoformat()
+                        if deadline_assessment.deadline
+                        else None
+                    ),
+                    "deadline_reason": deadline_assessment.reason,
+                    "deadline_confidence": deadline_assessment.confidence,
+                    "deadline_matched_text": getattr(
+                        deadline_assessment,
+                        "matched_text",
+                        None,
+                    ),
+                }
+            )
+
+            if deadline_assessment.requires_manual_review:
+                logger.info(
+                    "⚠️ DEADLINE UNKNOWN — CONTINUING: %s | %s",
+                    candidate.source_url,
+                    deadline_assessment.reason,
+                )
 
             qualification = self.classifier.classify(
                 doc.text,
@@ -778,7 +984,14 @@ class LeadDiscoveryService:
 
             if gate_decision.accepted:
                 qualified_candidates.append(
-                    (candidate, doc, qualification, context)
+                    {
+                        "candidate": candidate,
+                        "document": doc,
+                        "qualification": qualification,
+                        "context": context,
+                        "deadline": deadline_assessment,
+                        "listing": listing_assessment,
+                    }
                 )
                 logger.info(
                     "✅ QUALIFIED: %s | Source: %s/%s",
@@ -840,27 +1053,35 @@ class LeadDiscoveryService:
         logger.info(
             "Qualification stage complete. Collected: %s | Successful fetches: %s | "
             "Failed fetches: %s | Empty content: %s | Source-validation rejections: %s | "
-            "Expired rejections: %s | Gate rejections: %s | Qualified candidates: %s",
+            "Listing-page rejections: %s | Expired rejections: %s | "
+            "Gate rejections: %s | Qualified candidates: %s",
             len(collected_candidates),
             successful_fetches,
             failed_fetches,
             empty_content_count,
             validation_rejections,
+            listing_page_rejections,
             expired_rejections,
             gate_rejections,
             len(qualified_candidates),
         )
 
-        
+        # =====================================================================
+        # EXTRACTION / EMAIL-GENERATION SUPPORT STAGE (from your branch):
+        # LeadProfile construction, similarity-threshold manual review,
+        # Gemini final validation, country override, region filter.
+        # =====================================================================
         discovered_leads: List[DiscoveredLeadResponse] = []
         local_shortlist: list[dict[str, Any]] = []
-        similarity_manual_review: list[dict[str, Any]] = []
+        similarity_manual_review: list[ManualReviewLead] = []
         manual_review: list[ManualReviewLead] = []
 
-        # Local analysis remains responsible for matching each qualified
-        # opportunity to Triway services. Gemini is invoked only after this
-        # deterministic/local stage has completed.
-        for candidate, doc, qualification, context in qualified_candidates:
+        for item in qualified_candidates:
+            candidate = item["candidate"]
+            doc = item["document"]
+            qualification = item["qualification"]
+            context = item["context"]
+
             combined_content = "\n\n".join(
                 part
                 for part in [
@@ -870,7 +1091,6 @@ class LeadDiscoveryService:
                 ]
                 if part
             ).strip()
-            combined_content=combined_content[:49000]
 
             if not combined_content:
                 logger.warning(
@@ -888,13 +1108,30 @@ class LeadDiscoveryService:
 
             country = metadata.get("country")
 
+            # Smart truncation (keeps both ends) for the content actually
+            # sent to the analysis/embedding model...
+            analysis_content = truncate_text(
+                combined_content,
+                max_chars=LEAD_CONTENT_MAX_CHARS,
+            )
+            if len(combined_content) > LEAD_CONTENT_MAX_CHARS:
+                logger.info(
+                    "Lead content truncated for analysis | URL: %s | "
+                    "Original chars: %s | Analysis chars: %s",
+                    candidate.source_url,
+                    len(combined_content),
+                    len(analysis_content),
+                )
+
+            # ...while the FULL raw text is preserved in metadata for
+            # downstream use (e.g. the email-generation endpoint).
             lead = LeadProfile(
                 company_name=metadata.get("company_name"),
                 industry=metadata.get("industry"),
                 country=country,
                 source_url=str(candidate.source_url),
                 summary=candidate.source_snippet or candidate.source_title or "",
-                content=combined_content,
+                content=analysis_content,
                 technologies=[],
                 projects=[],
                 signals=[],
@@ -910,8 +1147,20 @@ class LeadDiscoveryService:
                     "intent_type": context["intent_type"],
                     "strategy": context["strategy"],
                     "query_priority": context["priority"],
+                    "query_strategy_order": context.get("strategy_order"),
                     "query_service_name": context["service_name"],
                     "extracted_emails": metadata.get("emails", []),
+                    "original_content_length": len(doc.text or ""),
+                    "analysis_content_length": len(analysis_content),
+                    "content_was_truncated": (
+                        len(combined_content) > LEAD_CONTENT_MAX_CHARS
+                    ),
+                    "deadline_status": context.get("deadline_status", "unknown"),
+                    "deadline": context.get("deadline"),
+                    "deadline_reason": context.get("deadline_reason", ""),
+                    "deadline_confidence": context.get("deadline_confidence", 0.0),
+                    "deadline_matched_text": context.get("deadline_matched_text"),
+                    # Raw text, kept for email generation / drafting.
                     "full_text": doc.text or "",
                     "cleaned_content": doc.text or "",
                     "page_text": doc.text or "",
@@ -939,7 +1188,10 @@ class LeadDiscoveryService:
                         source_url=str(candidate.source_url),
                         source_snippet=candidate.source_snippet,
                         search_query=candidate.search_query,
-                        reason="Candidate passed qualification but no service exceeded the similarity threshold.",
+                        reason=(
+                            "Candidate passed qualification but no service "
+                            "exceeded the similarity threshold."
+                        ),
                         review_type="similarity",
                     )
                 )
@@ -953,6 +1205,9 @@ class LeadDiscoveryService:
                     "context": context,
                     "lead": lead,
                     "analysis": analysis_response,
+                    # Needed by LeadIntelligenceService.build_report(), which
+                    # now requires a DeadlineAssessment.
+                    "deadline": item["deadline"],
                 }
             )
 
@@ -1012,7 +1267,13 @@ class LeadDiscoveryService:
                         title=candidate.source_title or "",
                         url=str(candidate.source_url),
                         snippet=candidate.source_snippet or "",
-                        content_excerpt=doc.text or "",
+                        content_excerpt=build_gemini_excerpt(
+                            doc.text,
+                            max_chars=self.config.get(
+                                "gemini_max_excerpt_chars",
+                                3000,
+                            ),
+                        ),
                         preliminary_company=analysis_response.company_name,
                         preliminary_signal_type=document_type,
                         preliminary_confidence=float(
@@ -1053,11 +1314,14 @@ class LeadDiscoveryService:
 
             top_match = analysis_response.matched_services[0]
 
-            gemini_result=gemini_result_map.get(str(index))
-            if gemini_result and gemini_result.country:
-                lead.country=gemini_result.country
-                logger.info("Updated lead country from Gemini validation: %s", lead.country)
-            
+            gemini_result = gemini_result_map.get(str(index))
+
+            if gemini_result and getattr(gemini_result, "country", None):
+                lead.country = gemini_result.country
+                logger.info(
+                    "Updated lead country from Gemini validation: %s",
+                    lead.country,
+                )
 
             if self.gemini_validator is None:
                 decision = LeadValidationDecision.VALID_LEAD
@@ -1081,7 +1345,11 @@ class LeadDiscoveryService:
                     validation_reason,
                 )
                 continue
+
             if decision == LeadValidationDecision.MANUAL_REVIEW:
+                # Bug fix from the original branch: this counter was declared
+                # but never incremented here, so it always reported 0.
+                gemini_manual_review_count += 1
                 logger.info(
                     "🟠 GEMINI MANUAL REVIEW: %s | Reason: %s",
                     candidate.source_url,
@@ -1115,9 +1383,8 @@ class LeadDiscoveryService:
                 lead=lead,
                 qualification=qualification,
                 analysis=analysis_response,
+                deadline=item["deadline"],
             )
-
-            
 
             discovered_leads.append(
                 DiscoveredLeadResponse(
@@ -1153,7 +1420,8 @@ class LeadDiscoveryService:
             reverse=True,
         )
         discovered_leads = discovered_leads[: request.max_leads]
-        # --- Region filter ---
+
+        # --- Region filter (from your branch) ---
         if self.region_names:
             original_leads_count = len(discovered_leads)
             discovered_leads = [
@@ -1162,7 +1430,10 @@ class LeadDiscoveryService:
             ]
             filtered_leads = original_leads_count - len(discovered_leads)
             if filtered_leads:
-                logger.info("Region filter removed %s leads (country not in service_regions).", filtered_leads)
+                logger.info(
+                    "Region filter removed %s leads (country not in service_regions).",
+                    filtered_leads,
+                )
 
             original_manual_count = len(manual_review)
             manual_review = [
@@ -1171,13 +1442,11 @@ class LeadDiscoveryService:
             ]
             filtered_manual = original_manual_count - len(manual_review)
             if filtered_manual:
-                logger.info("Region filter removed %s manual-review items.", filtered_manual)
-
-            # Update counts
-            leads_found = len(discovered_leads)
-            manual_review_count = len(manual_review)
+                logger.info(
+                    "Region filter removed %s manual-review items.",
+                    filtered_manual,
+                )
         else:
-            # If no region list is loaded, keep everything (fallback)
             logger.info("No region filter applied (region_names empty).")
 
         return DiscoverLeadsResponse(
@@ -1187,11 +1456,13 @@ class LeadDiscoveryService:
             leads_found=len(discovered_leads),
             leads=discovered_leads,
             manual_review_count=(
-                len(similarity_manual_review)
-                + len(manual_review)
+                len(similarity_manual_review) + len(manual_review)
             ),
             manual_review=(
-                similarity_manual_review
-                + manual_review
+                similarity_manual_review + manual_review
             ),
+            # NOTE: remove these two kwargs if DiscoverLeadsResponse doesn't
+            # define them yet -- see merge notes at the top of this file.
+            listing_page_rejections=listing_page_rejections,
+            expired_rejections=expired_rejections,
         )

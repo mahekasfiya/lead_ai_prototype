@@ -2,7 +2,7 @@ from __future__ import annotations
 from typing import Any
 from pydantic import BaseModel, Field, field_validator
 from enum import Enum
-from typing import Optional, List
+from typing import List
 from module_3.intelligence.models import (
     LeadIntelligenceReport,
 )
@@ -54,9 +54,6 @@ class QualificationResult(BaseModel):
 class LeadProfile(BaseModel):
     """
     Structured lead information received from later modules.
-
-    The teammate handling SerpAPI, scraping, and cleaning can
-    populate these fields before sending the lead for analysis.
     """
 
     company_name: str | None = Field(
@@ -347,10 +344,18 @@ class DiscoverLeadsRequest(BaseModel):
     Controls one SerpAPI lead-discovery run.
     """
 
-    max_queries: int = Field(
-        default=5,
+    queries_per_service: int = Field(
+        default=2,
         ge=1,
-        le=20,
+        le=3,
+        description="Number of query strategies to generate per eligible service.",
+    )
+
+    max_total_queries: int = Field(
+        default=50,
+        ge=1,
+        le=100,
+        description="Hard cap across the entire discovery run.",
     )
 
     results_per_query: int = Field(
@@ -413,6 +418,11 @@ class ManualReviewLead(BaseModel):
 
     review_type: str
 
+    gemini_confidence: float | None = None
+    deadline_status: str | None = None
+    deadline: str | None = None
+    best_similarity: float | None = None
+
 
 class DiscoverLeadsResponse(BaseModel):
     queries_executed: list[str]
@@ -423,5 +433,17 @@ class DiscoverLeadsResponse(BaseModel):
     leads: list[DiscoveredLeadResponse] = Field(
         default_factory=list
     )
+
     manual_review_count: int = 0
-    manual_review: List[ManualReviewLead] = []
+    manual_review: List[ManualReviewLead] = Field(
+        default_factory=list
+    )
+
+    listing_page_rejections: int = 0
+    expired_rejections: int = 0
+    qualification_rejections: int = 0
+
+    gemini_evaluated: int = 0
+    gemini_validated: int = 0
+    gemini_rejected: int = 0
+    gemini_manual_review: int = 0

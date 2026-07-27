@@ -1,8 +1,31 @@
 from __future__ import annotations
 
+# =============================================================================
+# MERGE NOTES
+# -----------------------------------------------------------------------------
+# Base: the branch with country extraction (LeadValidationResult.country),
+# since discovery_service.py's country-override-from-Gemini logic depends
+# on it.
+#
+# Added in from the other branch:
+#   - Deadline fields on LeadValidationCandidate (deadline_status, deadline,
+#     deadline_reason, deadline_confidence) plus the deadline-handling rules
+#     in the system prompt.
+#   - Retry/backoff + transient-error handling in _validate_batch (more
+#     resilient to 503s/timeouts than a single try/except).
+#   - More forgiving JSON-prefix stripping in _parse_json_response.
+#
+# Follow-up (not done here, since it touches a different file): now that
+# LeadValidationCandidate supports deadline_status/deadline/deadline_reason/
+# deadline_confidence again, discovery_service.py's Gemini candidate-building
+# loop could pass `context.get("deadline_status")` etc. through -- that data
+# is already computed there, just not wired into this call yet.
+# =============================================================================
+
 import json
 import logging
 import re
+import time
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, Iterable, Sequence
@@ -33,6 +56,12 @@ class LeadValidationCandidate:
     evidence: list[str] = field(default_factory=list)
     uncertainty_reasons: list[str] = field(default_factory=list)
 
+    # --- from friend's branch: deadline awareness ---
+    deadline_status: str = "unknown"
+    deadline: str | None = None
+    deadline_reason: str = ""
+    deadline_confidence: float = 0.0
+
     def to_prompt_dict(self) -> dict[str, Any]:
         return {
             "candidate_id": self.candidate_id,
@@ -49,6 +78,13 @@ class LeadValidationCandidate:
             "matched_services": self.matched_services,
             "evidence": self.evidence,
             "uncertainty_reasons": self.uncertainty_reasons,
+            "deadline_status": self.deadline_status,
+            "deadline": self.deadline,
+            "deadline_reason": self.deadline_reason,
+            "deadline_confidence": round(
+                max(0.0, min(1.0, float(self.deadline_confidence))),
+                4,
+            ),
         }
 
 
@@ -68,6 +104,8 @@ class LeadValidationResult:
     confidence: float = 0.0
     reason: str = ""
     validation_source: str = "gemini"
+    # --- from your branch: country extraction, used by discover()'s
+    # country-override logic ---
     country: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
@@ -129,6 +167,33 @@ Use:
   to make a reliable decision.
 
 Important rules:
+- The local similarity score is supporting evidence only. A low similarity
+  score must not automatically cause rejection when the requirement clearly
+  matches a supplied Triway service.
+- Determine whether the evidence describes one specific opportunity. A search
+  page, category page, tender directory, multi-opportunity listing, or generic
+  tender landing page is not a valid lead.
+- Use the supplied deadline analysis as the primary evidence for temporal status.
+
+  * If deadline_status is "expired", return not_a_lead.
+  * If deadline_status is "open", you may consider the opportunity current.
+  * If deadline_status is "upcoming", treat it as a valid future opportunity.
+  * If deadline_status is "unknown", inspect only the supplied document evidence.
+
+  Never infer that an opportunity is current solely because of:
+  - the URL
+  - the PDF filename
+  - upload/publication dates
+  - directory names
+  - page timestamps
+
+  Only explicit submission deadlines, closing dates,
+  procurement schedules or clear statements that the
+  opportunity is accepting responses may be used as
+  evidence that it is current.
+
+  If currentness cannot be verified,
+  return manual_review rather than valid_lead.
 - A technical job vacancy by itself is normally not enough.
 - A procurement article or newsletter mentioning procurement is not itself
   a procurement lead.
@@ -141,8 +206,10 @@ Important rules:
 - Keep the reason concise and evidence-based.
 
 Country extraction:
-From the content of the lead...determine which region or country the lead has come from. Give the full name of the country/region. eg: United States or United Arab Emirates (not US or UAE)
-
+From the content of the lead, determine which region or country the lead has
+come from. Give the full name of the country/region, e.g. "United States" or
+"United Arab Emirates" (not "US" or "UAE"). If the country cannot be
+determined from the evidence, return null.
 
 Return JSON only using this exact top-level structure:
 {
@@ -169,8 +236,10 @@ Return JSON only using this exact top-level structure:
         model: Any,
         *,
         batch_size: int = 8,
-        max_candidates: int = 20,
+        max_candidates: int | None = 20,
         max_excerpt_chars: int = 3000,
+        max_retries: int = 3,
+        retry_base_seconds: float = 2.0,
         raise_on_batch_failure: bool = False,
     ) -> None:
         if model is None:
@@ -179,16 +248,26 @@ Return JSON only using this exact top-level structure:
         if batch_size <= 0:
             raise ValueError("batch_size must be greater than zero.")
 
-        if max_candidates <= 0:
-            raise ValueError("max_candidates must be greater than zero.")
+        if max_candidates is not None and max_candidates <= 0:
+            raise ValueError(
+                "max_candidates must be greater than zero or None."
+            )
 
         if max_excerpt_chars <= 0:
             raise ValueError("max_excerpt_chars must be greater than zero.")
+
+        if max_retries < 0:
+            raise ValueError("max_retries cannot be negative.")
+
+        if retry_base_seconds <= 0:
+            raise ValueError("retry_base_seconds must be greater than zero.")
 
         self.model = model
         self.batch_size = batch_size
         self.max_candidates = max_candidates
         self.max_excerpt_chars = max_excerpt_chars
+        self.max_retries = max_retries
+        self.retry_base_seconds = retry_base_seconds
         self.raise_on_batch_failure = raise_on_batch_failure
 
     def validate_candidates(
@@ -197,7 +276,10 @@ Return JSON only using this exact top-level structure:
     ) -> list[LeadValidationResult]:
         """Validate shortlisted candidates in small Gemini batches."""
 
-        limited_candidates = list(candidates[: self.max_candidates])
+        if self.max_candidates is None:
+            limited_candidates = list(candidates)
+        else:
+            limited_candidates = list(candidates[: self.max_candidates])
 
         if not limited_candidates:
             return []
@@ -277,18 +359,58 @@ Return JSON only using this exact top-level structure:
     ) -> list[LeadValidationResult]:
         prompt = self._build_prompt(candidates)
 
-        try:
-            response = self._call_model(prompt)
-        except Exception as exc:
-            if self._looks_like_quota_error(exc):
-                raise GeminiQuotaExceededError(str(exc)) from exc
+        # --- from friend's branch: retry with backoff on transient errors ---
+        response = None
 
+        for attempt in range(self.max_retries + 1):
+            try:
+                response = self._call_model(prompt)
+                break
+            except Exception as exc:
+                if self._looks_like_quota_error(exc):
+                    raise GeminiQuotaExceededError(str(exc)) from exc
+
+                if (
+                    self._looks_like_transient_error(exc)
+                    and attempt < self.max_retries
+                ):
+                    delay = self.retry_base_seconds * (2 ** attempt)
+                    logger.warning(
+                        "Transient Gemini failure. Attempt %s/%s. "
+                        "Retrying in %.1fs. Error: %s",
+                        attempt + 1,
+                        self.max_retries + 1,
+                        delay,
+                        exc,
+                    )
+                    time.sleep(delay)
+                    continue
+
+                raise GeminiLeadValidatorError(
+                    f"Gemini request failed: {exc}"
+                ) from exc
+
+        if response is None:
             raise GeminiLeadValidatorError(
-                f"Gemini request failed: {exc}"
-            ) from exc
+                "Gemini returned no response after retries."
+            )
 
         response_text = self._extract_response_text(response)
-        payload = self._parse_json_response(response_text)
+
+        logger.debug(
+            "Raw Gemini response (%s chars): %s",
+            len(response_text),
+            self._truncate(response_text, 4000),
+        )
+
+        try:
+            payload = self._parse_json_response(response_text)
+        except GeminiResponseFormatError:
+            logger.warning(
+                "Unable to parse Gemini response. Raw response: %s",
+                self._truncate(response_text, 4000),
+            )
+            raise
 
         raw_results = payload.get("results")
 
@@ -419,6 +541,14 @@ Return JSON only using this exact top-level structure:
     def _parse_json_response(text: str) -> dict[str, Any]:
         cleaned = text.strip()
 
+        cleaned = re.sub(
+            r"^(?:here(?:'s| is)\s+(?:the\s+)?(?:json|result|response)s?\s*:?|"
+            r"response\s*:|json\s*:|analysis\s*:)",
+            "",
+            cleaned,
+            flags=re.IGNORECASE,
+        ).strip()
+
         # Remove optional Markdown JSON fences.
         if cleaned.startswith("```"):
             cleaned = re.sub(
@@ -532,10 +662,8 @@ Return JSON only using this exact top-level structure:
             ),
             confidence=confidence,
             reason=reason,
-            country=cls._optional_string(item.get("country"))
+            country=cls._optional_string(item.get("country")),
         )
-
-        
 
         return cls._apply_safety_consistency(result)
 
@@ -636,6 +764,32 @@ Return JSON only using this exact top-level structure:
         return any(
             marker in text
             for marker in quota_markers
+        )
+
+    @staticmethod
+    def _looks_like_transient_error(exc: Exception) -> bool:
+        text = str(exc).casefold()
+
+        transient_markers = (
+            "503",
+            "500",
+            "502",
+            "504",
+            "unavailable",
+            "service unavailable",
+            "temporarily unavailable",
+            "high demand",
+            "deadline exceeded",
+            "timeout",
+            "timed out",
+            "connection reset",
+            "connection aborted",
+            "internal server error",
+        )
+
+        return any(
+            marker in text
+            for marker in transient_markers
         )
 
     @staticmethod

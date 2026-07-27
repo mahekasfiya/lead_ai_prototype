@@ -25,11 +25,37 @@ QUERY_STRATEGIES: dict[str, dict[str, Any]] = {
             '-template -guide -tutorial -"how to" -blog -jobs'
         ),
     },
+    "partner_search": {
+        "source_type": "general_web",
+        "platform": "web",
+        "intent_type": "partner_search",
+        "priority": 2,
+        "template": (
+            '{phrase} '
+            '("seeking implementation partner" OR "looking for technology partner" '
+            'OR "seeking vendor" OR "inviting service providers" '
+            'OR "looking for consultants") '
+            '-jobs -careers -hiring -template -guide -blog'
+        ),
+    },
+    "technology_requirement": {
+        "source_type": "general_web",
+        "platform": "web",
+        "intent_type": "technology_requirement",
+        "priority": 3,
+        "template": (
+            '{phrase} '
+            '("implementation required" OR "migration required" '
+            'OR "integration required" OR "project requirement" '
+            'OR "required solution provider") '
+            '-jobs -careers -hiring -template -guide -tutorial -blog'
+        ),
+    },
     "freelancer_marketplace": {
         "source_type": "marketplace",
         "platform": "freelancer",
         "intent_type": "direct_project",
-        "priority": 2,
+        "priority": 4,
         "template": (
             'site:freelancer.com/projects {phrase} '
             '-profile -contest -freelancers'
@@ -39,26 +65,25 @@ QUERY_STRATEGIES: dict[str, dict[str, Any]] = {
         "source_type": "marketplace",
         "platform": "peopleperhour",
         "intent_type": "direct_project",
-        "priority": 2,
+        "priority": 5,
         "template": (
             'site:peopleperhour.com/freelance-jobs {phrase} '
             '-freelancer -profile'
         ),
     },
-    "partner_search": {
-        "source_type": "general_web",
-        "platform": "web",
-        "intent_type": "partner_search",
-        "priority": 3,
-        "template": (
-            '{phrase} '
-            '("seeking implementation partner" OR "looking for technology partner" '
-            'OR "seeking vendor" OR "inviting service providers" '
-            'OR "looking for consultants") '
-            '-jobs -careers -hiring -template -guide -blog'
-        ),
-    },
 }
+
+
+UNIVERSAL_STRATEGY_ORDER = [
+    "procurement_web",
+    "partner_search",
+    "technology_requirement",
+]
+
+MARKETPLACE_STRATEGY_ORDER = [
+    "freelancer_marketplace",
+    "peopleperhour_marketplace",
+]
 
 
 MARKETPLACE_FRIENDLY_TERMS = {
@@ -98,8 +123,9 @@ ENTERPRISE_ONLY_TERMS = {
 class QueryGenerator:
     """Generate deterministic, source-aware buying-signal queries.
 
-    LLM query planning remains disabled. The constructor and generate()
-    signatures are preserved for compatibility with the current API.
+    ``queries_per_service`` controls how many query strategies are requested
+    for each eligible service. ``max_total_queries`` is a hard safety limit
+    across the complete run.
     """
 
     def __init__(
@@ -126,18 +152,13 @@ class QueryGenerator:
             )
 
     def _load_services(self) -> list[dict[str, Any]]:
-        with self.knowledge_base_path.open(
-            "r",
-            encoding="utf-8",
-        ) as file:
+        with self.knowledge_base_path.open("r", encoding="utf-8") as file:
             data = json.load(file)
 
         services = data.get("services", [])
 
         if not isinstance(services, list):
-            raise ValueError(
-                "Knowledge base must contain a services list."
-            )
+            raise ValueError("Knowledge base must contain a services list.")
 
         return services
 
@@ -157,6 +178,7 @@ class QueryGenerator:
         for value in values:
             text = str(value).strip()
             key = text.casefold()
+
             if text and key not in seen:
                 cleaned.append(text)
                 seen.add(key)
@@ -170,9 +192,7 @@ class QueryGenerator:
     ) -> list[str]:
         """Select concise, distinctive terms for web search."""
 
-        service_name = str(
-            service.get("service_name", "")
-        ).strip()
+        service_name = str(service.get("service_name", "")).strip()
 
         candidates = [
             service_name,
@@ -211,23 +231,15 @@ class QueryGenerator:
         if len(terms) == 1:
             return f'"{terms[0]}"'
 
-        return "(" + " OR ".join(
-            f'"{term}"'
-            for term in terms
-        ) + ")"
+        return "(" + " OR ".join(f'"{term}"' for term in terms) + ")"
 
     @staticmethod
     def _normalised_service_text(
         service: dict[str, Any],
     ) -> str:
-        values: list[str] = [
-            str(service.get("service_name", "")),
-        ]
+        values: list[str] = [str(service.get("service_name", ""))]
 
-        for field_name in (
-            "search_keywords",
-            "technologies",
-        ):
+        for field_name in ("search_keywords", "technologies"):
             field_values = service.get(field_name, [])
             if isinstance(field_values, list):
                 values.extend(str(value) for value in field_values)
@@ -248,31 +260,25 @@ class QueryGenerator:
     def _strategies_for_service(
         self,
         service: dict[str, Any],
+        queries_per_service: int,
     ) -> list[str]:
-        strategies = ["procurement_web"]
+        """Return ordered strategies for one service."""
+
+        strategies = list(UNIVERSAL_STRATEGY_ORDER)
 
         if self._is_marketplace_friendly(service):
-            strategies.extend(
-                [
-                    "freelancer_marketplace",
-                    "peopleperhour_marketplace",
-                ]
-            )
+            strategies.extend(MARKETPLACE_STRATEGY_ORDER)
 
-        strategies.append("partner_search")
-        return strategies
+        return strategies[:queries_per_service]
 
     def _build_query(
         self,
         service: dict[str, Any],
         strategy_name: str,
+        strategy_order: int,
     ) -> dict[str, Any] | None:
-        service_id = str(
-            service.get("service_id", "")
-        ).strip()
-        service_name = str(
-            service.get("service_name", "")
-        ).strip()
+        service_id = str(service.get("service_id", "")).strip()
+        service_name = str(service.get("service_name", "")).strip()
         phrase = self._service_search_phrase(service)
         strategy = QUERY_STRATEGIES.get(strategy_name)
 
@@ -282,24 +288,39 @@ class QueryGenerator:
         return {
             "service_id": service_id,
             "service_name": service_name,
-            "query": strategy["template"].format(
-                phrase=phrase,
-            ),
+            "query": strategy["template"].format(phrase=phrase),
             "source_type": strategy["source_type"],
             "platform": strategy["platform"],
             "intent_type": strategy["intent_type"],
             "strategy": strategy_name,
+            "strategy_order": strategy_order,
             "priority": int(strategy["priority"]),
         }
 
     def generate(
         self,
-        max_queries: int,
+        queries_per_service: int,
+        max_total_queries: int,
         selected_service_ids: list[str] | None = None,
     ) -> list[dict[str, Any]]:
-        """Generate source-aware queries with fair service coverage."""
+        """Generate queries fairly across eligible services.
 
-        if max_queries <= 0:
+        Queries are emitted round-robin so every eligible service receives its
+        first strategy before any service receives its second strategy.
+        """
+
+        if queries_per_service <= 0:
+            logger.warning(
+                "Query generation skipped because queries_per_service=%s.",
+                queries_per_service,
+            )
+            return []
+
+        if max_total_queries <= 0:
+            logger.warning(
+                "Query generation skipped because max_total_queries=%s.",
+                max_total_queries,
+            )
             return []
 
         selected_ids = {
@@ -311,9 +332,7 @@ class QueryGenerator:
         eligible_services: list[dict[str, Any]] = []
 
         for service in self.services:
-            service_id = str(
-                service.get("service_id", "")
-            ).strip()
+            service_id = str(service.get("service_id", "")).strip()
 
             if not service_id:
                 continue
@@ -327,39 +346,46 @@ class QueryGenerator:
             eligible_services.append(service)
 
         if not eligible_services:
-            logger.info(
-                "Generated 0 source-aware buying-signal queries."
-            )
+            logger.info("Generated 0 source-aware buying-signal queries.")
             return []
 
         service_queues: dict[str, deque[dict[str, Any]]] = {}
 
         for service in eligible_services:
-            service_id = str(
-                service.get("service_id", "")
-            ).strip()
+            service_id = str(service.get("service_id", "")).strip()
             queue: deque[dict[str, Any]] = deque()
 
-            for strategy_name in self._strategies_for_service(service):
+            strategy_names = self._strategies_for_service(
+                service=service,
+                queries_per_service=queries_per_service,
+            )
+
+            for strategy_order, strategy_name in enumerate(
+                strategy_names,
+                start=1,
+            ):
                 candidate = self._build_query(
-                    service,
-                    strategy_name,
+                    service=service,
+                    strategy_name=strategy_name,
+                    strategy_order=strategy_order,
                 )
+
                 if candidate:
                     queue.append(candidate)
 
             if queue:
                 service_queues[service_id] = queue
 
+        requested_total = len(service_queues) * queries_per_service
+        effective_limit = min(requested_total, max_total_queries)
+
         results: list[dict[str, Any]] = []
 
-        while len(results) < max_queries:
+        while len(results) < effective_limit:
             added_this_round = False
 
             for service in eligible_services:
-                service_id = str(
-                    service.get("service_id", "")
-                ).strip()
+                service_id = str(service.get("service_id", "")).strip()
                 queue = service_queues.get(service_id)
 
                 if not queue:
@@ -368,41 +394,52 @@ class QueryGenerator:
                 results.append(queue.popleft())
                 added_this_round = True
 
-                if len(results) >= max_queries:
+                if len(results) >= effective_limit:
                     break
 
             if not added_this_round:
                 break
 
-        source_counts = Counter(
-            item["source_type"]
-            for item in results
-        )
-        platform_counts = Counter(
-            item["platform"]
-            for item in results
-        )
-        covered_services = {
-            item["service_id"]
-            for item in results
-        }
+        source_counts = Counter(item["source_type"] for item in results)
+        platform_counts = Counter(item["platform"] for item in results)
+        strategy_counts = Counter(item["strategy"] for item in results)
+        covered_services = {item["service_id"] for item in results}
 
         logger.info(
-            "Generated %s source-aware buying-signal queries. "
-            "Services covered: %s/%s | Source types: %s | Platforms: %s",
+            "Query generation complete. Eligible services: %s | "
+            "Queries per service: %s | Requested total: %s | "
+            "Maximum total: %s | Generated: %s | "
+            "Services covered: %s/%s | Source types: %s | "
+            "Platforms: %s | Strategies: %s",
+            len(eligible_services),
+            queries_per_service,
+            requested_total,
+            max_total_queries,
             len(results),
             len(covered_services),
             len(eligible_services),
             dict(source_counts),
             dict(platform_counts),
+            dict(strategy_counts),
         )
+
+        if requested_total > max_total_queries:
+            logger.info(
+                "The maximum total query cap reduced the run from %s "
+                "requested queries to %s generated queries.",
+                requested_total,
+                len(results),
+            )
 
         for item in results:
             logger.debug(
-                "Generated query | Service: %s (%s) | Source: %s | "
-                "Platform: %s | Intent: %s | Query: %s",
+                "Generated query | Service: %s (%s) | "
+                "Strategy: %s (#%s) | Source: %s | Platform: %s | "
+                "Intent: %s | Query: %s",
                 item["service_name"],
                 item["service_id"],
+                item["strategy"],
+                item["strategy_order"],
                 item["source_type"],
                 item["platform"],
                 item["intent_type"],
@@ -414,25 +451,30 @@ class QueryGenerator:
     def _fallback_generate(
         self,
         service: dict[str, Any],
-        max_queries: int,
+        queries_per_service: int,
     ) -> list[dict[str, Any]]:
-        """Compatibility helper using the same source-aware strategies."""
+        """Generate queries for one service using the same strategies."""
 
-        if max_queries <= 0:
+        if queries_per_service <= 0:
             return []
 
         queries: list[dict[str, Any]] = []
+        strategy_names = self._strategies_for_service(
+            service=service,
+            queries_per_service=queries_per_service,
+        )
 
-        for strategy_name in self._strategies_for_service(service):
+        for strategy_order, strategy_name in enumerate(
+            strategy_names,
+            start=1,
+        ):
             candidate = self._build_query(
-                service,
-                strategy_name,
+                service=service,
+                strategy_name=strategy_name,
+                strategy_order=strategy_order,
             )
 
             if candidate:
                 queries.append(candidate)
-
-            if len(queries) >= max_queries:
-                break
 
         return queries

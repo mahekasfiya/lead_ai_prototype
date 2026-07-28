@@ -36,8 +36,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 import time
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import Any, List
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -567,7 +569,6 @@ class LeadDiscoveryService:
     ):
         self.analysis_service = analysis_service
         self.intelligence_service = LeadIntelligenceService()
-        # --- from friend's branch: listing-page detection ---
         self.listing_page_detector = ListingPageDetector()
 
         llm_model = config.get("llm_model")
@@ -668,6 +669,10 @@ class LeadDiscoveryService:
                 "Knowledge base path not provided or missing; region filter disabled."
             )
 
+        # Concurrency settings
+        self.query_workers = config.get("query_workers", 5)   # parallel SerpAPI calls
+        self.fetch_workers = config.get("fetch_workers", 10)  # parallel document fetches
+
     def discover(
         self,
         request: DiscoverLeadsRequest,
@@ -708,7 +713,10 @@ class LeadDiscoveryService:
         seen_urls: set[str] = set()
         prefiltered_count = 0
 
-        for record in query_records:
+        # -----------------------------------------------------------------
+        # PARALLEL QUERY EXECUTION (SerpAPI calls)
+        # -----------------------------------------------------------------
+        def execute_query(record: dict) -> tuple[dict, List[Any]]:
             logger.info(
                 "Executing query | Service: %s (%s) | Source: %s | "
                 "Platform: %s | Strategy: %s | Query: %s",
@@ -719,66 +727,76 @@ class LeadDiscoveryService:
                 record.get("strategy", "legacy"),
                 record["query"],
             )
+            results = search(record["query"], num_results=request.results_per_query)
+            return record, results
 
-            results = search(
-                record["query"],
-                num_results=request.results_per_query,
-            )
+        with ThreadPoolExecutor(max_workers=self.query_workers) as query_executor:
+            query_futures = {
+                query_executor.submit(execute_query, rec): rec
+                for rec in query_records
+            }
 
-            for result in results:
-                normalized_url = normalize_url(result.url)
-
-                if normalized_url in seen_urls:
-                    logger.debug("Duplicate URL skipped: %s", result.url)
+            for future in as_completed(query_futures):
+                try:
+                    record, results = future.result()
+                except Exception as exc:
+                    logger.error("Query execution failed: %s", exc, exc_info=True)
                     continue
 
-                seen_urls.add(normalized_url)
+                for result in results:
+                    normalized_url = normalize_url(result.url)
 
-                candidate = SearchCandidate(
-                    source_url=result.url,
-                    source_title=result.title,
-                    source_snippet=result.snippet,
-                    source_domain=urlsplit(result.url).netloc,
-                    search_query=record["query"],
-                    service_id=record["service_id"],
-                    service_name=record.get("service_name"),
-                    source_type=record.get("source_type"),
-                    platform=record.get("platform"),
-                    intent_type=record.get("intent_type"),
-                    strategy=record.get("strategy"),
-                    strategy_order=record.get("strategy_order"),
-                    priority=record.get("priority"),
-                )
+                    if normalized_url in seen_urls:
+                        logger.debug("Duplicate URL skipped: %s", result.url)
+                        continue
 
-                context = {
-                    "source_type": record.get("source_type", "procurement"),
-                    "platform": record.get("platform", "web"),
-                    "intent_type": record.get("intent_type", "procurement"),
-                    "strategy": record.get("strategy", "legacy"),
-                    "priority": record.get("priority", 99),
-                    "strategy_order": record.get("strategy_order"),
-                    "service_name": record.get("service_name", ""),
-                }
+                    seen_urls.add(normalized_url)
 
-                skip_candidate, skip_reason = should_skip_candidate(
-                    candidate,
-                    source_type=context["source_type"],
-                    platform=context["platform"],
-                )
-
-                if skip_candidate:
-                    prefiltered_count += 1
-                    logger.info(
-                        "⏭️ PRE-FILTERED: %s | Source: %s/%s | %s",
-                        candidate.source_url,
-                        context["source_type"],
-                        context["platform"],
-                        skip_reason,
+                    candidate = SearchCandidate(
+                        source_url=result.url,
+                        source_title=result.title,
+                        source_snippet=result.snippet,
+                        source_domain=urlsplit(result.url).netloc,
+                        search_query=record["query"],
+                        service_id=record["service_id"],
+                        service_name=record.get("service_name"),
+                        source_type=record.get("source_type"),
+                        platform=record.get("platform"),
+                        intent_type=record.get("intent_type"),
+                        strategy=record.get("strategy"),
+                        strategy_order=record.get("strategy_order"),
+                        priority=record.get("priority"),
                     )
-                    continue
 
-                candidate_context[normalized_url] = context
-                collected_candidates.append(candidate)
+                    context = {
+                        "source_type": record.get("source_type", "procurement"),
+                        "platform": record.get("platform", "web"),
+                        "intent_type": record.get("intent_type", "procurement"),
+                        "strategy": record.get("strategy", "legacy"),
+                        "priority": record.get("priority", 99),
+                        "strategy_order": record.get("strategy_order"),
+                        "service_name": record.get("service_name", ""),
+                    }
+
+                    skip_candidate, skip_reason = should_skip_candidate(
+                        candidate,
+                        source_type=context["source_type"],
+                        platform=context["platform"],
+                    )
+
+                    if skip_candidate:
+                        prefiltered_count += 1
+                        logger.info(
+                            "⏭️ PRE-FILTERED: %s | Source: %s/%s | %s",
+                            candidate.source_url,
+                            context["source_type"],
+                            context["platform"],
+                            skip_reason,
+                        )
+                        continue
+
+                    candidate_context[normalized_url] = context
+                    collected_candidates.append(candidate)
 
         context_counts = Counter(
             context["source_type"] for context in candidate_context.values()
@@ -792,6 +810,9 @@ class LeadDiscoveryService:
             dict(context_counts),
         )
 
+        # -----------------------------------------------------------------
+        # PARALLEL DOCUMENT FETCHING AND PROCESSING
+        # -----------------------------------------------------------------
         qualified_candidates: list[dict[str, Any]] = []
         successful_fetches = 0
         failed_fetches = 0
@@ -800,7 +821,13 @@ class LeadDiscoveryService:
         expired_rejections = 0
         gate_rejections = 0
 
-        for candidate in collected_candidates:
+        # Use a thread-local lock to update counters safely
+        counter_lock = threading.Lock()
+
+        def fetch_and_process(candidate: SearchCandidate) -> None:
+            nonlocal successful_fetches, failed_fetches, empty_content_count
+            nonlocal validation_rejections, expired_rejections, gate_rejections
+
             context = candidate_context.get(
                 normalize_url(str(candidate.source_url)),
                 {
@@ -817,20 +844,23 @@ class LeadDiscoveryService:
             doc = self.fetcher.fetch(str(candidate.source_url))
 
             if doc.fetch_status != "success":
-                failed_fetches += 1
+                with counter_lock:
+                    failed_fetches += 1
                 logger.warning(
                     "Fetch failed for %s: %s",
                     candidate.source_url,
                     doc.fetch_error,
                 )
-                continue
+                return
 
-            successful_fetches += 1
+            with counter_lock:
+                successful_fetches += 1
 
             if not normalize_text(doc.text):
-                empty_content_count += 1
+                with counter_lock:
+                    empty_content_count += 1
                 logger.info("❌ EMPTY CONTENT: %s", candidate.source_url)
-                continue
+                return
 
             valid, rejection_reasons, matched_terms = validate_by_source(
                 source_type=context["source_type"],
@@ -842,7 +872,8 @@ class LeadDiscoveryService:
             )
 
             if not valid:
-                validation_rejections += 1
+                with counter_lock:
+                    validation_rejections += 1
                 logger.info(
                     "❌ SOURCE VALIDATION FAILED: %s | Source: %s/%s",
                     candidate.source_url,
@@ -851,7 +882,7 @@ class LeadDiscoveryService:
                 )
                 logger.info("   Reasons: %s", rejection_reasons)
                 logger.info("   Matched indicators: %s", matched_terms)
-                continue
+                return
 
             logger.info(
                 "✅ SOURCE VALIDATION PASSED: %s | Source: %s/%s",
@@ -882,13 +913,14 @@ class LeadDiscoveryService:
                 listing_assessment.reason,
             )
             if listing_assessment.is_listing_page:
-                listing_page_rejections += 1
+                with counter_lock:
+                    listing_page_rejections += 1
                 logger.info(
                     "❌ LISTING PAGE REJECTED: %s | Indicators: %s",
                     candidate.source_url,
                     listing_assessment.matched_indicators,
                 )
-                continue
+                return
 
             deadline_assessment = self.deadline_checker.assess(
                 title=candidate.source_title or "",
@@ -907,7 +939,8 @@ class LeadDiscoveryService:
             )
 
             if deadline_assessment.is_expired:
-                expired_rejections += 1
+                with counter_lock:
+                    expired_rejections += 1
                 logger.info(
                     "❌ EXPIRED OPPORTUNITY: %s | Deadline: %s | %s",
                     candidate.source_url,
@@ -918,7 +951,7 @@ class LeadDiscoveryService:
                     ),
                     deadline_assessment.reason,
                 )
-                continue
+                return
 
             context = dict(context)
             context.update(
@@ -983,25 +1016,28 @@ class LeadDiscoveryService:
             )
 
             if gate_decision.accepted:
-                qualified_candidates.append(
-                    {
-                        "candidate": candidate,
-                        "document": doc,
-                        "qualification": qualification,
-                        "context": context,
-                        "deadline": deadline_assessment,
-                        "listing": listing_assessment,
-                    }
-                )
+                # Append to qualified_candidates (need lock because list append is not thread-safe)
+                with counter_lock:
+                    qualified_candidates.append(
+                        {
+                            "candidate": candidate,
+                            "document": doc,
+                            "qualification": qualification,
+                            "context": context,
+                            "deadline": deadline_assessment,
+                            "listing": listing_assessment,
+                        }
+                    )
                 logger.info(
                     "✅ QUALIFIED: %s | Source: %s/%s",
                     candidate.source_url,
                     context["source_type"],
                     context["platform"],
                 )
-                continue
+                return
 
-            gate_rejections += 1
+            with counter_lock:
+                gate_rejections += 1
 
             logger.info(
                 "❌ QUALIFICATION REJECTED: %s | Source: %s | Reason: %s",
@@ -1050,6 +1086,19 @@ class LeadDiscoveryService:
             logger.info("   contradiction_reasons: %s", contradiction_reasons)
             logger.info("   rejection_reasons: %s", rejection_reasons)
 
+        # Execute fetch-and-process in parallel
+        with ThreadPoolExecutor(max_workers=self.fetch_workers) as fetch_executor:
+            fetch_futures = {
+                fetch_executor.submit(fetch_and_process, cand): cand
+                for cand in collected_candidates
+            }
+            # Wait for all to complete
+            for future in as_completed(fetch_futures):
+                # Future results are None; we just wait for completion.
+                # Exceptions in fetch_and_process will be logged inside.
+                pass
+
+        # qualified_candidates is now fully populated.
         logger.info(
             "Qualification stage complete. Collected: %s | Successful fetches: %s | "
             "Failed fetches: %s | Empty content: %s | Source-validation rejections: %s | "
@@ -1347,8 +1396,6 @@ class LeadDiscoveryService:
                 continue
 
             if decision == LeadValidationDecision.MANUAL_REVIEW:
-                # Bug fix from the original branch: this counter was declared
-                # but never incremented here, so it always reported 0.
                 gemini_manual_review_count += 1
                 logger.info(
                     "🟠 GEMINI MANUAL REVIEW: %s | Reason: %s",

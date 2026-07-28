@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import threading
 import time
 from io import BytesIO
 from typing import List, Optional
@@ -55,15 +56,23 @@ class DocumentFetcher:
         self.retries = max(1, retries)
         self.retry_backoff_seconds = max(0.0, retry_backoff_seconds)
 
-        self.session = requests.Session()
-        self.session.headers.update(DEFAULT_HEADERS)
-        self.session.max_redirects = max_redirects
-
-        adapter = HTTPAdapter(max_retries=0)
-        self.session.mount("http://", adapter)
-        self.session.mount("https://", adapter)
+        # Thread-local storage for session so each thread gets its own
+        self._local = threading.local()
+        self._session_headers = DEFAULT_HEADERS.copy()
+        self.max_redirects = max_redirects
 
         self.allowed_schemes = {"http", "https"}
+
+    def _get_session(self):
+        if not hasattr(self._local, "session"):
+            session = requests.Session()
+            session.headers.update(self._session_headers)
+            session.max_redirects = self.max_redirects
+            adapter = HTTPAdapter(max_retries=0)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
+            self._local.session = session
+        return self._local.session
 
     def _validate_url(self, url: str) -> bool:
         parsed = urlparse(url)
@@ -180,7 +189,8 @@ class DocumentFetcher:
         for attempt in range(self.retries):
             response: requests.Response | None = None
             try:
-                response = self.session.get(
+                session = self._get_session()
+                response = session.get(
                     url,
                     timeout=self.timeout,
                     stream=True,

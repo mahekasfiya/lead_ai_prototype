@@ -239,12 +239,12 @@ Example:
 
 ```env
 GEMINI_API_KEY=your_gemini_api_key
-SERPAPI_API_KEY=your_serpapi_key
+SERPAPI_KEY=your_serpapi_key
 
 USE_GEMINI = true
 
-QUERY_WORKERS=5
-FETCH_WORKERS=10
+QUERY_WORKERS=5 # no. of queries fetched at the same time through serpapi(can be any no.)
+FETCH_WORKERS=10 # 
 
 LOG_LEVEL=INFO
 EMBEDDING_PROVIDER=local
@@ -287,6 +287,12 @@ For real deployments, replace the knowledge base with your organization's:
 - Regions
 
 ---
+## Generate Embeddings
+```bash
+python -m module_2.generate_embeddings
+```
+NOTE: Requires Internet Connection
+(GPU can be used to speed up this process)
 
 ## Run the API
 
@@ -305,8 +311,12 @@ Swagger UI:
 ```
 http://127.0.0.1:8000/docs
 ```
-
+NOTE: This location is for debugging
 ---
+## Run the Streamlit App
+```bash
+streamlit run dashboard/app.py
+```
 
 ## API Endpoints
 

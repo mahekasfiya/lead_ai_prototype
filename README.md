@@ -241,9 +241,24 @@ Example:
 GEMINI_API_KEY=your_gemini_api_key
 SERPAPI_API_KEY=your_serpapi_key
 
-ENABLE_GEMINI=true
+USE_GEMINI = true
+
+QUERY_WORKERS=5
+FETCH_WORKERS=10
 
 LOG_LEVEL=INFO
+EMBEDDING_PROVIDER=local
+LOCAL_EMBEDDING_MODEL=sentence-transformers/all-MiniLM-L6-v2
+LOCAL_EMBEDDING_BATCH_SIZE=16
+NORMALIZE_EMBEDDINGS=true
+KNOWLEDGE_BASE_PATH=data/triway_knowledge_base_v0_2.json
+OUTPUT_DIRECTORY=data/embeddings
+
+EMBEDDING_VERSION=triway-services-local-v1
+APP_ENV=development
+LOG_LEVEL=INFO
+
+
 ```
 
 Additional configuration can be adjusted in:

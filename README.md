@@ -186,7 +186,7 @@ Outputs include:
 
 ## Prerequisites
 
-- Python 3.10+
+- Python 3.10 - 3.13
 - Git
 - Google Gemini API Key
 - SerpAPI Key (or another supported search provider)

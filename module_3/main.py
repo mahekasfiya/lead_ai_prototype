@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dotenv import load_dotenv
 
 import logging
 import os
@@ -25,7 +26,10 @@ from module_3.schemas import (
 )
 from module_3.service import LeadAnalysisService
 from module_3.intelligence.service import LeadIntelligenceService
+from module_3.discovery.potential_lead_discovery import PotentialLeadDiscovery
 
+
+load_dotenv()
 # ------------------------------
 # Logging setup
 # ------------------------------
@@ -42,7 +46,7 @@ lead_analysis_service: LeadAnalysisService | None = None
 lead_discovery_service: LeadDiscoveryService | None = None
 lead_intelligence_service: LeadIntelligenceService | None = None
 embedding_validation_result: dict | None = None
-
+potential_lead_discovery: PotentialLeadDiscovery | None = None
 # ------------------------------
 # Lifespan for service initialisation
 # ------------------------------
@@ -52,6 +56,7 @@ async def lifespan(app: FastAPI):
     global lead_discovery_service
     global lead_intelligence_service
     global embedding_validation_result
+    global potential_lead_discovery
 
     logger.info("Starting Triway Lead Intelligence API.")
     logger.info("Loading embedding model.")
@@ -102,6 +107,14 @@ async def lifespan(app: FastAPI):
             llm_model = None
     else:
         logger.info("Gemini disabled or API key missing. Using rule-based classifier.")
+
+
+    anthropic_api_key= os.getenv("ANTHROPIC_API_KEY")
+    if anthropic_api_key:
+        potential_lead_discovery=PotentialLeadDiscovery(anthropic_api_key)
+        logger.info("Potential lead discovery service (with Claude) loaded.")
+    else:
+        logger.warning("Anthropic API key missing; potential leaed discovery disabled.")
 
     # Build the discovery config
     discovery_config = {
@@ -258,3 +271,38 @@ def generate_email_draft(request: EmailDraftRequest) -> dict:
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Email generation failed: {exc}",
         )
+    
+class PotentialLeadRequest(BaseModel):
+    industries: list[str] | None = None
+    countries: list[str] | None = None
+    min_employees: int | None = None
+    max_employees: int | None = None
+    revenue: str | None = None
+    technologies: list[str] | None = None
+    recent_funding: bool | None = None
+
+@app.post("/discover-potential-leads", tags=["Lead Discovery"])
+def discover_potential_leads(request: PotentialLeadRequest) -> dict:
+    if potential_lead_discovery is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Potential lead discovery service not ready.")
+    try:
+        criteria = request.dict(exclude_none=True)
+        results = potential_lead_discovery.discover(criteria)
+        return {"count": len(results), "leads": results}
+    except Exception as e:
+        logger.exception("Potential lead discovery failed.")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))
+
+class LinkedInMessageRequest(BaseModel):
+    lead: dict  # the person object from potential leads
+
+@app.post("/generate-linkedin-message", tags=["Lead Intelligence"])
+def generate_linkedin_message(request: LinkedInMessageRequest) -> dict:
+    if potential_lead_discovery is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Potential lead service not ready.")
+    try:
+        message = potential_lead_discovery.generate_linkedin_message(request.lead)
+        return {"message": message}
+    except Exception as e:
+        logger.exception("LinkedIn message generation failed.")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(e))

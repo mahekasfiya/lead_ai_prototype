@@ -1,26 +1,11 @@
 from __future__ import annotations
 
-# =============================================================================
-# MERGE NOTES
-# -----------------------------------------------------------------------------
-# Base: the branch with country extraction (LeadValidationResult.country),
-# since discovery_service.py's country-override-from-Gemini logic depends
-# on it.
-#
-# Added in from the other branch:
-#   - Deadline fields on LeadValidationCandidate (deadline_status, deadline,
-#     deadline_reason, deadline_confidence) plus the deadline-handling rules
-#     in the system prompt.
-#   - Retry/backoff + transient-error handling in _validate_batch (more
-#     resilient to 503s/timeouts than a single try/except).
-#   - More forgiving JSON-prefix stripping in _parse_json_response.
-#
-# Follow-up (not done here, since it touches a different file): now that
-# LeadValidationCandidate supports deadline_status/deadline/deadline_reason/
-# deadline_confidence again, discovery_service.py's Gemini candidate-building
-# loop could pass `context.get("deadline_status")` etc. through -- that data
-# is already computed there, just not wired into this call yet.
-# =============================================================================
+"""
+Provider-neutral LLM validator for shortlisted lead candidates.
+
+The validator receives evidence collected and filtered by the discovery
+pipeline. It does not browse URLs or perform resource collection.
+"""
 
 import json
 import logging
@@ -103,7 +88,7 @@ class LeadValidationResult:
 
     confidence: float = 0.0
     reason: str = ""
-    validation_source: str = "gemini"
+    validation_source: str = "claude"
     # --- from your branch: country extraction, used by discover()'s
     # country-override logic ---
     country: str | None = None
@@ -114,31 +99,31 @@ class LeadValidationResult:
         return data
 
 
-class GeminiLeadValidatorError(RuntimeError):
-    """Base exception for validator failures."""
+class LLMLeadValidatorError(RuntimeError):
+    """Base exception for LLM validator failures."""
 
 
-class GeminiQuotaExceededError(GeminiLeadValidatorError):
-    """Raised when Gemini rejects the request because quota is exhausted."""
+class LLMQuotaExceededError(LLMLeadValidatorError):
+    """Raised when the LLM provider rejects a request due to quota or rate limits."""
 
 
-class GeminiResponseFormatError(GeminiLeadValidatorError):
-    """Raised when Gemini does not return valid structured output."""
+class LLMResponseFormatError(LLMLeadValidatorError):
+    """Raised when the LLM does not return valid structured output."""
 
 
-class GeminiLeadValidator:
+class LLMLeadValidator:
     """Batch validator for lead candidates.
 
     The validator does not browse URLs. It evaluates only the evidence supplied
     in each LeadValidationCandidate.
 
-    The `model` object may be:
-    1. A google-generativeai style model with `generate_content(prompt)`.
-    2. A callable accepting one prompt string.
-    3. A small wrapper exposing `generate(prompt)`.
+    The model object may be:
 
-    The returned response should either be a string or expose a `.text`
-    attribute.
+    1. An adapter exposing ``generate_content(prompt)``.
+    2. An adapter exposing ``generate(prompt)``.
+    3. A callable accepting one prompt string.
+
+    The response must either be a string or expose a ``text`` attribute.
     """
 
     SYSTEM_INSTRUCTIONS = """
@@ -243,7 +228,7 @@ Return JSON only using this exact top-level structure:
         raise_on_batch_failure: bool = False,
     ) -> None:
         if model is None:
-            raise ValueError("A Gemini model or model wrapper is required.")
+            raise ValueError("An LLM model or model adapter is required.")
 
         if batch_size <= 0:
             raise ValueError("batch_size must be greater than zero.")
@@ -274,7 +259,7 @@ Return JSON only using this exact top-level structure:
         self,
         candidates: Sequence[LeadValidationCandidate],
     ) -> list[LeadValidationResult]:
-        """Validate shortlisted candidates in small Gemini batches."""
+        """Validate shortlisted candidates in small LLM batches."""
 
         if self.max_candidates is None:
             limited_candidates = list(candidates)
@@ -292,9 +277,9 @@ Return JSON only using this exact top-level structure:
         ):
             try:
                 results.extend(self._validate_batch(batch))
-            except GeminiQuotaExceededError:
+            except LLMQuotaExceededError:
                 logger.warning(
-                    "Gemini quota exceeded. Remaining candidates are marked "
+                    "LLM quota exceeded. Remaining candidates are marked "
                     "for manual review."
                 )
 
@@ -309,15 +294,15 @@ Return JSON only using this exact top-level structure:
                 results.extend(
                     self._manual_review_result(
                         candidate_id=candidate_id,
-                        reason="Gemini validation was unavailable because quota was exceeded.",
+                        reason="LLM validation was unavailable because quota was exceeded.",
                     )
                     for candidate_id in unresolved_ids
                 )
                 break
 
-            except GeminiLeadValidatorError as exc:
+            except LLMLeadValidatorError as exc:
                 logger.warning(
-                    "Gemini batch validation failed: %s",
+                    "LLM batch validation failed: %s",
                     exc,
                 )
 
@@ -327,23 +312,23 @@ Return JSON only using this exact top-level structure:
                 results.extend(
                     self._manual_review_result(
                         candidate_id=candidate.candidate_id,
-                        reason="Gemini returned an unusable validation response.",
+                        reason="LLM returned an unusable validation response.",
                     )
                     for candidate in batch
                 )
 
             except Exception as exc:
                 logger.exception(
-                    "Unexpected Gemini validation error."
+                    "Unexpected LLM validation error."
                 )
 
                 if self.raise_on_batch_failure:
-                    raise GeminiLeadValidatorError(str(exc)) from exc
+                    raise LLMLeadValidatorError(str(exc)) from exc
 
                 results.extend(
                     self._manual_review_result(
                         candidate_id=candidate.candidate_id,
-                        reason="Gemini validation failed unexpectedly.",
+                        reason="LLM validation failed unexpectedly.",
                     )
                     for candidate in batch
                 )
@@ -368,7 +353,7 @@ Return JSON only using this exact top-level structure:
                 break
             except Exception as exc:
                 if self._looks_like_quota_error(exc):
-                    raise GeminiQuotaExceededError(str(exc)) from exc
+                    raise LLMQuotaExceededError(str(exc)) from exc
 
                 if (
                     self._looks_like_transient_error(exc)
@@ -376,7 +361,7 @@ Return JSON only using this exact top-level structure:
                 ):
                     delay = self.retry_base_seconds * (2 ** attempt)
                     logger.warning(
-                        "Transient Gemini failure. Attempt %s/%s. "
+                        "Transient LLM failure. Attempt %s/%s. "
                         "Retrying in %.1fs. Error: %s",
                         attempt + 1,
                         self.max_retries + 1,
@@ -386,28 +371,28 @@ Return JSON only using this exact top-level structure:
                     time.sleep(delay)
                     continue
 
-                raise GeminiLeadValidatorError(
-                    f"Gemini request failed: {exc}"
+                raise LLMLeadValidatorError(
+                    f"LLM request failed: {exc}"
                 ) from exc
 
         if response is None:
-            raise GeminiLeadValidatorError(
-                "Gemini returned no response after retries."
+            raise LLMLeadValidatorError(
+                "LLM returned no response after retries."
             )
 
         response_text = self._extract_response_text(response)
 
         logger.debug(
-            "Raw Gemini response (%s chars): %s",
+            "Raw LLM response (%s chars): %s",
             len(response_text),
             self._truncate(response_text, 4000),
         )
 
         try:
             payload = self._parse_json_response(response_text)
-        except GeminiResponseFormatError:
+        except LLMResponseFormatError:
             logger.warning(
-                "Unable to parse Gemini response. Raw response: %s",
+                "Unable to parse LLM response. Raw response: %s",
                 self._truncate(response_text, 4000),
             )
             raise
@@ -415,8 +400,8 @@ Return JSON only using this exact top-level structure:
         raw_results = payload.get("results")
 
         if not isinstance(raw_results, list):
-            raise GeminiResponseFormatError(
-                "Gemini response did not contain a results list."
+            raise LLMResponseFormatError(
+                "LLM response did not contain a results list."
             )
 
         expected_ids = {
@@ -435,14 +420,14 @@ Return JSON only using this exact top-level structure:
 
             if result.candidate_id not in expected_ids:
                 logger.warning(
-                    "Ignoring Gemini result with unknown candidate_id: %s",
+                    "Ignoring LLM result with unknown candidate_id: %s",
                     result.candidate_id,
                 )
                 continue
 
             if result.candidate_id in returned_ids:
                 logger.warning(
-                    "Ignoring duplicate Gemini result for candidate_id: %s",
+                    "Ignoring duplicate LLM result for candidate_id: %s",
                     result.candidate_id,
                 )
                 continue
@@ -455,7 +440,7 @@ Return JSON only using this exact top-level structure:
         parsed_results.extend(
             self._manual_review_result(
                 candidate_id=candidate_id,
-                reason="Gemini did not return a decision for this candidate.",
+                reason="LLM did not return a decision for this candidate.",
             )
             for candidate_id in missing_ids
         )
@@ -509,17 +494,15 @@ Return JSON only using this exact top-level structure:
         )
 
     def _call_model(self, prompt: str) -> Any:
+        """Call the configured LLM adapter."""
         if hasattr(self.model, "generate_content"):
             return self.model.generate_content(prompt)
-
         if hasattr(self.model, "generate"):
             return self.model.generate(prompt)
-
         if callable(self.model):
             return self.model(prompt)
-
-        raise GeminiLeadValidatorError(
-            "Unsupported Gemini model object. Expected generate_content(), "
+        raise LLMLeadValidatorError(
+            "Unsupported LLM model object. Expected generate_content(), "
             "generate(), or a callable."
         )
 
@@ -531,8 +514,8 @@ Return JSON only using this exact top-level structure:
             text = getattr(response, "text", None)
 
         if not isinstance(text, str) or not text.strip():
-            raise GeminiResponseFormatError(
-                "Gemini response did not contain text."
+            raise LLMResponseFormatError(
+                "LLM response did not contain text."
             )
 
         return text.strip()
@@ -571,20 +554,20 @@ Return JSON only using this exact top-level structure:
             end = cleaned.rfind("}")
 
             if start == -1 or end == -1 or end <= start:
-                raise GeminiResponseFormatError(
-                    "Gemini response was not valid JSON."
+                raise LLMResponseFormatError(
+                    "LLM response was not valid JSON."
                 )
 
             try:
                 payload = json.loads(cleaned[start : end + 1])
             except json.JSONDecodeError as exc:
-                raise GeminiResponseFormatError(
-                    "Gemini response was not valid JSON."
+                raise LLMResponseFormatError(
+                    "LLM response was not valid JSON."
                 ) from exc
 
         if not isinstance(payload, dict):
-            raise GeminiResponseFormatError(
-                "Gemini response must be a JSON object."
+            raise LLMResponseFormatError(
+                "LLM response must be a JSON object."
             )
 
         return payload
@@ -599,8 +582,8 @@ Return JSON only using this exact top-level structure:
         ).strip()
 
         if not candidate_id:
-            raise GeminiResponseFormatError(
-                "Gemini result is missing candidate_id."
+            raise LLMResponseFormatError(
+                "LLM result is missing candidate_id."
             )
 
         decision_raw = str(
@@ -671,7 +654,7 @@ Return JSON only using this exact top-level structure:
     def _apply_safety_consistency(
         result: LeadValidationResult,
     ) -> LeadValidationResult:
-        """Prevent contradictory Gemini output from becoming a valid lead."""
+        """Prevent contradictory LLM output from becoming a valid lead."""
 
         if result.decision != LeadValidationDecision.VALID_LEAD:
             return result
@@ -740,7 +723,7 @@ Return JSON only using this exact top-level structure:
             ordered.append(
                 by_id.get(
                     candidate.candidate_id,
-                    GeminiLeadValidator._manual_review_result(
+                    LLMLeadValidator._manual_review_result(
                         candidate_id=candidate.candidate_id,
                         reason="No validation result was available.",
                     ),

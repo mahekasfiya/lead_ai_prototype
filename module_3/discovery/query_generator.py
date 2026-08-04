@@ -7,6 +7,9 @@ from pathlib import Path
 from typing import Any, Optional
 
 from module_2.config import settings
+from module_3.discovery.knowledge_base import ServiceKnowledge
+from module_3.discovery.models import PlannedSearchQuery
+from module_3.discovery.query_planner import QueryPlanner
 
 
 logger = logging.getLogger(__name__)
@@ -121,7 +124,10 @@ ENTERPRISE_ONLY_TERMS = {
 
 
 class QueryGenerator:
-    """Generate deterministic, source-aware buying-signal queries.
+    """"Generate LLM-planned or deterministic buying-signal queries.
+
+    Claude planning is used when enabled and available. Deterministic,
+    source-aware generation remains the fallback.
 
     ``queries_per_service`` controls how many query strategies are requested
     for each eligible service. ``max_total_queries`` is a hard safety limit
@@ -129,26 +135,41 @@ class QueryGenerator:
     """
 
     def __init__(
-        self,
-        knowledge_base_path: Path | None = None,
-        use_llm: bool = False,
-        llm_model=None,
-        use_gemini: bool = False,
-        planner_prompt_path: Optional[Path] = None,
-    ):
+            self,
+            knowledge_base_path: Path | None = None,
+            use_llm: bool = False,
+            llm_model: Any | None = None,
+            planner_prompt_path: Optional[Path] = None,
+    ) -> None:
         self.knowledge_base_path = (
             knowledge_base_path or settings.knowledge_base_path
         )
         self.services = self._load_services()
+        self.use_llm = bool(use_llm and llm_model is not None)
+        self.llm_model = llm_model
+        self.planner: QueryPlanner | None = None
 
-        self.use_llm = False
-        self.use_gemini = False
-        self.planner = None
-
-        if use_llm or use_gemini or llm_model is not None:
+        if self.use_llm:
+            try:
+                knowledge = ServiceKnowledge(self.knowledge_base_path)
+                self.planner = QueryPlanner(
+                    kb=knowledge,
+                    llm_model=llm_model,
+                    use_llm=True,
+                    prompt_path=planner_prompt_path,
+                )
+                logger.info("LLM query planning enabled.")
+            except Exception:
+                logger.exception(
+                    "Failed to initialize the LLM query planner. "
+                    "Deterministic query generation will be used."
+                )
+                self.use_llm = False
+                self.planner = None
+        else:
             logger.info(
-                "QueryGenerator is running in deterministic rule-only mode; "
-                "LLM query planning is disabled."
+                "LLM query planning disabled. "
+                "Deterministic query generation will be used."
             )
 
     def _load_services(self) -> list[dict[str, Any]]:
@@ -297,6 +318,77 @@ class QueryGenerator:
             "priority": int(strategy["priority"]),
         }
 
+    @staticmethod
+    def _planned_query_to_dict(
+        planned: PlannedSearchQuery,
+    ) -> dict[str, Any]:
+        """
+        Convert a validated PlannedSearchQuery into the dictionary shape
+        expected by the existing discovery pipeline.
+        """
+        if hasattr(planned, "model_dump"):
+            return planned.model_dump()
+        return {
+            "service_id": planned.service_id,
+            "service_name": planned.service_name,
+            "query": planned.query,
+            "source_type": planned.source_type,
+            "platform": planned.platform,
+            "intent_type": planned.intent_type,
+            "strategy": planned.strategy,
+            "strategy_order": planned.strategy_order,
+            "priority": planned.priority,
+            "target_country": planned.target_country,
+        }
+
+    def _generate_with_llm(
+            self,
+            service: dict[str, Any],
+            queries_per_service: int,
+    ) -> list[dict[str, Any]]:
+        """
+        Generate queries for one service through the LLM planner.
+        The existing deterministic generator is used whenever the planner is
+        disabled, fails, or returns no usable queries.
+        """
+        if not self.use_llm or self.planner is None:
+            return self._fallback_generate(
+                service=service,
+                queries_per_service=queries_per_service,
+            )
+        service_id = str(service.get("service_id", "")).strip()
+        if not service_id:
+            return []
+        try:
+            planned = self.planner.plan_queries(service_id)
+            results = [
+                self._planned_query_to_dict(item)
+                for item in planned[:queries_per_service]
+            ]
+            results = self._deduplicate_queries(results)
+            if results:
+                logger.info(
+                    "LLM generated %s queries for service %s.",
+                    len(results),
+                    service_id,
+                )
+                return results
+            logger.warning(
+                "LLM generated no usable queries for service %s. "
+                "Using deterministic fallback.",
+                service_id,
+            )
+        except Exception:
+            logger.exception(
+                "LLM query generation failed for service %s. "
+                "Using deterministic fallback.",
+                service_id,
+            )
+        return self._fallback_generate(
+            service=service,
+            queries_per_service=queries_per_service,
+        )
+
     def generate(
         self,
         queries_per_service: int,
@@ -354,25 +446,12 @@ class QueryGenerator:
         for service in eligible_services:
             service_id = str(service.get("service_id", "")).strip()
             queue: deque[dict[str, Any]] = deque()
-
-            strategy_names = self._strategies_for_service(
+            service_queries = self._generate_with_llm(
                 service=service,
                 queries_per_service=queries_per_service,
             )
-
-            for strategy_order, strategy_name in enumerate(
-                strategy_names,
-                start=1,
-            ):
-                candidate = self._build_query(
-                    service=service,
-                    strategy_name=strategy_name,
-                    strategy_order=strategy_order,
-                )
-
-                if candidate:
-                    queue.append(candidate)
-
+            for candidate in service_queries:
+                queue.append(candidate)
             if queue:
                 service_queues[service_id] = queue
 
@@ -447,6 +526,23 @@ class QueryGenerator:
             )
 
         return results
+
+    @staticmethod
+    def _deduplicate_queries(
+        queries: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        unique: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in queries:
+            query = str(item.get("query") or "").strip()
+            if not query:
+                continue
+            normalized = " ".join(query.casefold().split())
+            if normalized in seen:
+                continue
+            seen.add(normalized)
+            unique.append(item)
+        return unique
 
     def _fallback_generate(
         self,

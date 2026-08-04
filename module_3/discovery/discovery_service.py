@@ -10,8 +10,8 @@ from __future__ import annotations
 #   ListingPageDetector, and richer content-truncation helpers.
 #
 #   "Extraction / email-generation stage" (local analysis -> LeadProfile ->
-#   Gemini final validation -> region filter -> response) is taken from the
-#   branch with the region filter, country-override-from-Gemini, and the
+#   LLM final validation -> region filter -> response) is taken from the
+#   branch with the region filter, country-override-from-LLM, and the
 #   raw full_text/cleaned_content/page_text metadata (kept because the
 #   email-generation endpoint likely reads these fields).
 #
@@ -49,8 +49,8 @@ from app.search.serpapi import search
 from module_3.discovery.contradiction_checker import ContradictionChecker
 from module_3.discovery.deadline_checker import DeadlineChecker
 from module_3.discovery.document_fetcher import DocumentFetcher
-from module_3.discovery.gemini_lead_validator import (
-    GeminiLeadValidator,
+from module_3.discovery.llm_lead_validator import (
+    LLMLeadValidator,
     LeadValidationCandidate,
     LeadValidationDecision,
 )
@@ -330,12 +330,12 @@ def truncate_text(
     )
 
 
-def build_gemini_excerpt(
+def build_llm_excerpt(
     value: str | None,
     max_chars: int = 1800,
 ) -> str:
     """
-    Build a compact Gemini excerpt that preserves both the beginning
+    Build a compact LLM excerpt that preserves both the beginning
     and end of a document.
 
     Procurement scope is commonly near the beginning, while deadlines
@@ -572,53 +572,49 @@ class LeadDiscoveryService:
         self.listing_page_detector = ListingPageDetector()
 
         llm_model = config.get("llm_model")
-        use_gemini = config.get("use_gemini", False)
+        use_llm = config.get("use_llm", False)
         self.llm_model = llm_model
 
         self.query_generator = QueryGenerator(
             knowledge_base_path=config.get("knowledge_base_path"),
-            use_llm=False,
-            llm_model=None,
-            use_gemini=False,
+            use_llm=use_llm,
+            llm_model=llm_model,
             planner_prompt_path=config.get("planner_prompt_path"),
         )
 
-        # Gemini can remain disabled while all deterministic pipeline edits
-        # are tested. RequirementClassifier receives no remote model when off.
+        # Requirement classification remains rule-based for now.
+        # Claude is used only for final validation at this stage.
         self.classifier = RequirementClassifier(
             llm_model=None,
             use_gemini=False,
             max_chunks=config.get("max_chunks", 3),
         )
 
-        # Gemini is used only as the final verifier for locally shortlisted
-        # opportunities. It is deliberately not used for query generation or
-        # requirement classification.
-        self.gemini_validator = None
-
-        if use_gemini and llm_model is not None:
-            self.gemini_validator = GeminiLeadValidator(
+        # The LLM is used only as the final verifier for locally shortlisted
+        # opportunities. Query generation and initial requirement classification
+        # remain deterministic at this stage.
+        self.llm_validator = None
+        if use_llm and llm_model is not None:
+            self.llm_validator = LLMLeadValidator(
                 model=llm_model,
-                batch_size=config.get("gemini_batch_size", 8),
-                max_candidates=config.get("gemini_max_candidates", 20),
+                batch_size=config.get("llm_batch_size", 8),
+                max_candidates=config.get("llm_max_candidates", 20),
                 max_excerpt_chars=config.get(
-                    "gemini_max_excerpt_chars",
+                    "llm_max_excerpt_chars",
                     3000,
                 ),
             )
-
             logger.info(
-                "Gemini lead validator enabled. Batch size: %s | "
+                "LLM lead validator enabled. Batch size: %s | "
                 "Max candidates: %s",
-                config.get("gemini_batch_size", 8),
-                config.get("gemini_max_candidates", 20),
+                config.get("llm_batch_size", 8),
+                config.get("llm_max_candidates", 20),
             )
         else:
             logger.info(
-                "Gemini lead validator disabled. "
+                "LLM lead validator disabled. "
                 "Locally validated leads will be returned."
             )
-
         self.fetcher = DocumentFetcher(
             timeout=config.get("fetch_timeout", 20),
             max_size=config.get("fetch_max_size", 10 * 1024 * 1024),
@@ -1118,7 +1114,7 @@ class LeadDiscoveryService:
         # =====================================================================
         # EXTRACTION / EMAIL-GENERATION SUPPORT STAGE (from your branch):
         # LeadProfile construction, similarity-threshold manual review,
-        # Gemini final validation, country override, region filter.
+        # LLM final validation, country override, region filter.
         # =====================================================================
         discovered_leads: List[DiscoveredLeadResponse] = []
         local_shortlist: list[dict[str, Any]] = []
@@ -1262,16 +1258,17 @@ class LeadDiscoveryService:
 
         logger.info(
             "Local analysis complete. Analysed: %s | "
-            "Shortlisted for Gemini: %s | Similarity manual review: %s",
+            "Shortlisted for LLM validation: %s | "
+            "Similarity manual review: %s",
             len(qualified_candidates),
             len(local_shortlist),
             len(similarity_manual_review),
         )
 
-        gemini_results = []
+        llm_results = []
 
-        if self.gemini_validator and local_shortlist:
-            gemini_candidates: list[LeadValidationCandidate] = []
+        if self.llm_validator and local_shortlist:
+            llm_candidates: list[LeadValidationCandidate] = []
 
             for index, item in enumerate(local_shortlist):
                 candidate = item["candidate"]
@@ -1310,16 +1307,16 @@ class LeadDiscoveryService:
                     str(qualification.document_type),
                 )
 
-                gemini_candidates.append(
+                llm_candidates.append(
                     LeadValidationCandidate(
                         candidate_id=str(index),
                         title=candidate.source_title or "",
                         url=str(candidate.source_url),
                         snippet=candidate.source_snippet or "",
-                        content_excerpt=build_gemini_excerpt(
+                        content_excerpt=build_llm_excerpt(
                             doc.text,
                             max_chars=self.config.get(
-                                "gemini_max_excerpt_chars",
+                                "llm_max_excerpt_chars",
                                 3000,
                             ),
                         ),
@@ -1339,21 +1336,21 @@ class LeadDiscoveryService:
                 )
 
             logger.info(
-                "Starting Gemini validation. Candidates: %s",
-                len(gemini_candidates),
+                "Starting LLM validation. Candidates: %s",
+                len(llm_candidates),
             )
 
-            gemini_results = self.gemini_validator.validate_candidates(
-                gemini_candidates
+            llm_results = self.llm_validator.validate_candidates(
+                llm_candidates
             )
 
-        gemini_result_map = {
+        llm_result_map = {
             result.candidate_id: result
-            for result in gemini_results
+            for result in llm_results
         }
 
-        gemini_rejected_count = 0
-        gemini_manual_review_count = 0
+        llm_rejected_count = 0
+        llm_manual_review_count = 0
 
         for index, item in enumerate(local_shortlist):
             candidate = item["candidate"]
@@ -1363,42 +1360,42 @@ class LeadDiscoveryService:
 
             top_match = analysis_response.matched_services[0]
 
-            gemini_result = gemini_result_map.get(str(index))
+            llm_result = llm_result_map.get(str(index))
 
-            if gemini_result and getattr(gemini_result, "country", None):
-                lead.country = gemini_result.country
+            if llm_result and getattr(llm_result, "country", None):
+                lead.country = llm_result.country
                 logger.info(
-                    "Updated lead country from Gemini validation: %s",
+                    "Updated lead country from LLM validation: %s",
                     lead.country,
                 )
 
-            if self.gemini_validator is None:
+            if self.llm_validator is None:
                 decision = LeadValidationDecision.VALID_LEAD
                 validation_reason = (
-                    "Gemini validation was disabled; local validation was used."
+                    "LLM validation was disabled; local validation was used."
                 )
-            elif gemini_result is None:
+            elif llm_result is None:
                 decision = LeadValidationDecision.MANUAL_REVIEW
                 validation_reason = (
-                    "Gemini returned no validation result for this candidate."
+                    "LLM returned no validation result for this candidate."
                 )
             else:
-                decision = gemini_result.decision
-                validation_reason = gemini_result.reason
+                decision = llm_result.decision
+                validation_reason = llm_result.reason
 
             if decision == LeadValidationDecision.NOT_A_LEAD:
-                gemini_rejected_count += 1
+                llm_rejected_count += 1
                 logger.info(
-                    "❌ GEMINI REJECTED: %s | Reason: %s",
+                    "❌ LLM REJECTED: %s | Reason: %s",
                     candidate.source_url,
                     validation_reason,
                 )
                 continue
 
             if decision == LeadValidationDecision.MANUAL_REVIEW:
-                gemini_manual_review_count += 1
+                llm_manual_review_count += 1
                 logger.info(
-                    "🟠 GEMINI MANUAL REVIEW: %s | Reason: %s",
+                    "🟠 LLM MANUAL REVIEW: %s | Reason: %s",
                     candidate.source_url,
                     validation_reason,
                 )
@@ -1414,14 +1411,14 @@ class LeadDiscoveryService:
                         suggested_service_id=top_match.service_id,
                         suggested_service_name=top_match.service_name,
                         suggested_similarity=top_match.service_match_percentage,
-                        review_type="gemini",
+                        review_type="llm",
                         reason=validation_reason,
                     )
                 )
                 continue
 
             logger.info(
-                "✅ GEMINI VALIDATED: %s | Reason: %s",
+                "✅ LLM VALIDATED: %s | Reason: %s",
                 candidate.source_url,
                 validation_reason,
             )
@@ -1454,11 +1451,11 @@ class LeadDiscoveryService:
             )
 
         logger.info(
-            "Gemini validation complete. Valid: %s | Rejected: %s | "
-            "Gemini manual review: %s | Similarity manual review: %s",
+            "LLM validation complete. Valid: %s | Rejected: %s | "
+            "LLM manual review: %s | Similarity manual review: %s",
             len(discovered_leads),
-            gemini_rejected_count,
-            gemini_manual_review_count,
+            llm_rejected_count,
+            llm_manual_review_count,
             len(similarity_manual_review),
         )
 

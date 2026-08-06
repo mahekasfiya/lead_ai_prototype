@@ -7,24 +7,6 @@
       "coverage_type": "office_and_core_market"
     },
     {
-      "region": "India",
-      "country_code": "IN",
-      "priority": 1,
-      "coverage_type": "office_and_core_market"
-    },
-    {
-      "region": "United Kingdom",
-      "country_code": "GB",
-      "priority": 1,
-      "coverage_type": "office_and_core_market"
-    },
-    {
-      "region": "United States",
-      "country_code": "US",
-      "priority": 1,
-      "coverage_type": "office_and_core_market"
-    },
-    {
       "region": "Saudi Arabia",
       "country_code": "SA",
       "priority": 2,
@@ -33,78 +15,6 @@
     {
       "region": "Oman",
       "country_code": "OM",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "Kuwait",
-      "country_code": "KW",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "Singapore",
-      "country_code": "SG",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "Malaysia",
-      "country_code": "MY",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "Sri Lanka",
-      "country_code": "LK",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "South Africa",
-      "country_code": "ZA",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "Australia",
-      "country_code": "AU",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "Germany",
-      "country_code": "DE",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "Canada",
-      "country_code": "CA",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "Japan",
-      "country_code": "JP",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "South Korea",
-      "country_code": "KR",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "Russia",
-      "country_code": "RU",
-      "priority": 2,
-      "coverage_type": "served_market"
-    },
-    {
-      "region": "Spain",
-      "country_code": "ES",
       "priority": 2,
       "coverage_type": "served_market"
     }

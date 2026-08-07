@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 SOURCE_PROCUREMENT = "PROCUREMENT"
 SOURCE_DIRECT_PROJECT = "DIRECT_PROJECT"
 SOURCE_PARTNER_SEARCH = "PARTNER_SEARCH"
+SOURCE_BUYING_SIGNAL = "BUYING_SIGNAL"
 SOURCE_HIRING_SIGNAL = "HIRING_SIGNAL"
 SOURCE_GENERAL_WEB = "GENERAL_WEB"
 
@@ -85,9 +86,17 @@ class RequirementClassifier:
             "FREELANCER": SOURCE_DIRECT_PROJECT,
             "PEOPLEPERHOUR": SOURCE_DIRECT_PROJECT,
             "PARTNER": SOURCE_PARTNER_SEARCH,
-            "HIRING": SOURCE_HIRING_SIGNAL,
-            "JOB": SOURCE_HIRING_SIGNAL,
+            "PARTNER_REQUEST": SOURCE_PARTNER_SEARCH,
+            "REGULATORY_TRIGGER": SOURCE_BUYING_SIGNAL,
+            "IMPLEMENTATION_ANNOUNCEMENT": SOURCE_BUYING_SIGNAL,
+            "DIGITAL_TRANSFORMATION": SOURCE_BUYING_SIGNAL,
+            "MODERNIZATION_PROJECT": SOURCE_BUYING_SIGNAL,
+            "TECHNOLOGY_REQUIREMENT": SOURCE_BUYING_SIGNAL,
+            "INDUSTRY_REQUIREMENT": SOURCE_BUYING_SIGNAL,
             "GENERAL": SOURCE_GENERAL_WEB,
+            "HIRING": SOURCE_HIRING_SIGNAL,
+            "HIRING_ACTIVITY": SOURCE_HIRING_SIGNAL,
+            "JOB": SOURCE_HIRING_SIGNAL,
         }
         return aliases.get(normalized, normalized)
 
@@ -107,35 +116,42 @@ Source context:
 
 Interpret the page according to its source type:
 - PROCUREMENT: formal RFP, RFQ, tender, EOI, bid, or procurement notice.
-- DIRECT_PROJECT: marketplace or project post where a buyer requests work, deliverables, a budget, milestones, bids, or proposals.
-- PARTNER_SEARCH: an organization seeking an implementation partner, technology partner, integrator, consultant, vendor, or service provider.
-- HIRING_SIGNAL: a job vacancy or recruitment signal. This is not a direct service lead.
-- GENERAL_WEB: other web pages that may describe a requirement or initiative.
+- DIRECT_PROJECT: marketplace or project post where a buyer requests work.
+- PARTNER_SEARCH: an organization seeking a partner, integrator, consultant,
+  vendor, or service provider.
+- BUYING_SIGNAL: a concrete regulatory, implementation, modernization,
+  transformation, migration, rollout, compliance, or technology initiative.
+- HIRING_SIGNAL: a job vacancy or recruitment signal.
+- GENERAL_WEB: any other page.
 
 Important rules:
-1. Do not require formal tender terminology for DIRECT_PROJECT.
-2. A marketplace project post normally implies an external supplier is required.
-3. A PARTNER_SEARCH can be a valid buyer requirement even without formal procurement language.
-4. A HIRING_SIGNAL must have is_service_requirement=false and document_type=job_posting unless the page independently contains an explicit external-services request.
-5. Provider marketing pages, directories, articles, reports, training pages, and generic news are not direct buyer requirements.
+1. BUYING_SIGNAL does not require literal RFP or vendor-request language.
+2. BUYING_SIGNAL must still describe a concrete initiative, mandate,
+   implementation, programme, deadline, rollout, migration, transformation,
+   or external-capability need.
+3. Generic articles, provider marketing, directories, training, research,
+   market reports, and general regulatory summaries are not buyer requirements.
+4. HIRING_SIGNAL is not a direct service lead unless the page independently
+   contains an explicit external-services request.
+5. A valid buyer requirement should identify a buyer, contracting authority,
+   regulated organization, or organization-specific initiative.
 
-Classify these fields:
-- document_type: one of rfp, rfq, eoi, tender, procurement_notice, invitation_to_bid, direct_requirement, partner_request, implementation_announcement, digital_transformation_initiative, modernization_project, news_about_requirement, vendor_service_page, directory, job_posting, training, article, unknown
-- is_service_requirement: boolean
-- organization_role: buyer, provider, aggregator, publisher, unknown
-- requirement_status: open, upcoming, closed, expired, unclear
-- buyer_intent_score: float 0.0-1.0
-- provider_probability: float 0.0-1.0
-- explicit_requirement: boolean
-- requires_external_supplier: boolean
-- evidence_quotes: list of up to 3 short supporting quotes
-- rejection_reasons: list of reasons when not a valid buyer requirement
-- confidence: float 0.0-1.0
+Classify:
+- document_type
+- is_service_requirement
+- organization_role
+- requirement_status
+- buyer_intent_score
+- provider_probability
+- explicit_requirement
+- requires_external_supplier
+- evidence_quotes
+- rejection_reasons
+- confidence
 
+Return valid JSON only.
 Page text:
 {text}
-
-Return only valid JSON with exactly those fields.
 """
 
         response = self.llm_model.generate_content(prompt)
@@ -156,6 +172,8 @@ Return only valid JSON with exactly those fields.
         source_type: str,
         platform: str,
     ) -> QualificationResult:
+        del platform
+
         lowered = text.casefold()
 
         provider_patterns = {
@@ -173,6 +191,9 @@ Return only valid JSON with exactly those fields.
             "service offering": 1.0,
             "case study": 0.7,
             "success story": 0.7,
+            "book a demo": 0.8,
+            "request a demo": 0.8,
+            "our platform": 0.8,
         }
 
         procurement_patterns = {
@@ -231,6 +252,46 @@ Return only valid JSON with exactly those fields.
             "implementation consultant": 1.2,
         }
 
+        buying_signal_patterns = {
+            "mandatory compliance": 1.8,
+            "must comply": 1.8,
+            "required to comply": 1.8,
+            "compliance deadline": 1.8,
+            "regulatory requirement": 1.8,
+            "regulatory mandate": 2.0,
+            "new regulation": 1.4,
+            "implementation programme": 2.0,
+            "implementation program": 2.0,
+            "implementation project": 2.0,
+            "implementation timeline": 1.7,
+            "planned implementation": 1.8,
+            "system implementation": 1.6,
+            "integration project": 1.7,
+            "planned integration": 1.6,
+            "rollout programme": 1.8,
+            "rollout program": 1.8,
+            "technology rollout": 1.6,
+            "deployment programme": 1.6,
+            "deployment program": 1.6,
+            "digital transformation": 1.8,
+            "technology transformation": 1.8,
+            "modernization programme": 1.8,
+            "modernisation programme": 1.8,
+            "system modernization": 1.8,
+            "legacy modernization": 1.8,
+            "platform replacement": 1.6,
+            "system replacement": 1.6,
+            "infrastructure upgrade": 1.5,
+            "technology upgrade": 1.5,
+            "migration programme": 1.8,
+            "migration program": 1.8,
+            "erp implementation": 2.0,
+            "budget approved": 1.8,
+            "approved budget": 1.8,
+            "programme launch": 1.6,
+            "program launch": 1.6,
+        }
+
         hiring_patterns = {
             "job description": 1.4,
             "apply now": 1.2,
@@ -264,29 +325,50 @@ Return only valid JSON with exactly those fields.
             "will be issued",
             "coming soon",
             "future procurement",
+            "will become mandatory",
+            "effective from",
+            "scheduled rollout",
         ]
 
         provider_score = self._weighted_score(lowered, provider_patterns)
         procurement_score = self._weighted_score(lowered, procurement_patterns)
         project_score = self._weighted_score(lowered, direct_project_patterns)
         partner_score = self._weighted_score(lowered, partner_patterns)
+        buying_signal_score = self._weighted_score(
+            lowered,
+            buying_signal_patterns,
+        )
         hiring_score = self._weighted_score(lowered, hiring_patterns)
 
         source_bonus = {
-            SOURCE_PROCUREMENT: (1.5, 0.0, 0.0, 0.0),
-            SOURCE_DIRECT_PROJECT: (0.0, 1.5, 0.0, 0.0),
-            SOURCE_PARTNER_SEARCH: (0.0, 0.0, 1.5, 0.0),
-            SOURCE_HIRING_SIGNAL: (0.0, 0.0, 0.0, 1.5),
-        }.get(source_type, (0.0, 0.0, 0.0, 0.0))
+            SOURCE_PROCUREMENT: (1.5, 0.0, 0.0, 0.0, 0.0),
+            SOURCE_DIRECT_PROJECT: (0.0, 1.5, 0.0, 0.0, 0.0),
+            SOURCE_PARTNER_SEARCH: (0.0, 0.0, 1.5, 0.0, 0.0),
+            SOURCE_BUYING_SIGNAL: (0.0, 0.0, 0.0, 1.2, 0.0),
+            SOURCE_HIRING_SIGNAL: (0.0, 0.0, 0.0, 0.0, 1.5),
+        }.get(source_type, (0.0, 0.0, 0.0, 0.0, 0.0))
 
         procurement_score += source_bonus[0]
         project_score += source_bonus[1]
         partner_score += source_bonus[2]
-        hiring_score += source_bonus[3]
+        buying_signal_score += source_bonus[3]
+        hiring_score += source_bonus[4]
 
-        buyer_signal_score = max(procurement_score, project_score, partner_score)
-        buyer_intent_score = self._normalize_score(buyer_signal_score, scale=5.0)
-        provider_probability = self._normalize_score(provider_score, scale=4.0)
+        buyer_signal_score = max(
+            procurement_score,
+            project_score,
+            partner_score,
+            buying_signal_score,
+        )
+
+        buyer_intent_score = self._normalize_score(
+            buyer_signal_score,
+            scale=5.0,
+        )
+        provider_probability = self._normalize_score(
+            provider_score,
+            scale=4.0,
+        )
 
         evidence = self._evidence_quotes(
             text,
@@ -294,6 +376,7 @@ Return only valid JSON with exactly those fields.
                 *procurement_patterns.keys(),
                 *direct_project_patterns.keys(),
                 *partner_patterns.keys(),
+                *buying_signal_patterns.keys(),
                 *hiring_patterns.keys(),
             ],
         )
@@ -310,11 +393,13 @@ Return only valid JSON with exactly those fields.
             procurement_score=procurement_score,
             project_score=project_score,
             partner_score=partner_score,
+            buying_signal_score=buying_signal_score,
             hiring_score=hiring_score,
         )
 
         if source_type == SOURCE_HIRING_SIGNAL or (
-            hiring_score >= 2.0 and hiring_score > buyer_signal_score
+            hiring_score >= 2.0
+            and hiring_score > buyer_signal_score
         ):
             return QualificationResult(
                 document_type=DocumentType.JOB_POSTING,
@@ -331,31 +416,53 @@ Return only valid JSON with exactly those fields.
                 ],
                 confidence=self._confidence(
                     primary_score=hiring_score,
-                    opposing_score=max(buyer_signal_score, provider_score),
-                    source_consistent=source_type == SOURCE_HIRING_SIGNAL,
+                    opposing_score=max(
+                        buyer_signal_score,
+                        provider_score,
+                    ),
+                    source_consistent=(
+                        source_type == SOURCE_HIRING_SIGNAL
+                    ),
                 ),
             )
 
         is_provider = provider_score > buyer_signal_score + 0.75
-        is_buyer = buyer_signal_score >= self._minimum_signal(source_type) and not is_provider
+        minimum_signal = self._minimum_signal(source_type)
+
+        is_buyer = (
+            buyer_signal_score >= minimum_signal
+            and not is_provider
+        )
 
         explicit_requirement = self._explicit_requirement(
             lowered,
             source_type=source_type,
         )
+
         requires_external_supplier = self._requires_external_supplier(
             lowered,
             source_type=source_type,
             explicit_requirement=explicit_requirement,
+            buying_signal_score=buying_signal_score,
         )
 
-        role = OrganizationRole.BUYER if is_buyer else OrganizationRole.PROVIDER
+        if is_buyer:
+            role = OrganizationRole.BUYER
+        elif is_provider:
+            role = OrganizationRole.PROVIDER
+        else:
+            role = OrganizationRole.UNKNOWN
+
         rejection_reasons: list[str] = []
 
         if is_provider:
-            rejection_reasons.append("Provider-marketing language outweighs buyer requirement signals.")
+            rejection_reasons.append(
+                "Provider-marketing language outweighs buyer requirement signals."
+            )
         elif not is_buyer:
-            rejection_reasons.append("No sufficiently strong buyer requirement was detected for this source type.")
+            rejection_reasons.append(
+                "No sufficiently strong buyer requirement was detected for this source type."
+            )
 
         if source_type == SOURCE_DIRECT_PROJECT and is_buyer:
             explicit_requirement = True
@@ -364,14 +471,31 @@ Return only valid JSON with exactly those fields.
         if source_type == SOURCE_PARTNER_SEARCH and is_buyer:
             requires_external_supplier = True
 
+        if source_type == SOURCE_BUYING_SIGNAL and is_buyer:
+            # Buying signals can be concrete and actionable without literal
+            # tender or vendor-request language.
+            explicit_requirement = (
+                explicit_requirement
+                or buying_signal_score >= 1.8
+            )
+
         confidence = self._confidence(
-            primary_score=buyer_signal_score if is_buyer else max(provider_score, buyer_signal_score),
-            opposing_score=provider_score if is_buyer else buyer_signal_score,
+            primary_score=(
+                buyer_signal_score
+                if is_buyer
+                else max(provider_score, buyer_signal_score)
+            ),
+            opposing_score=(
+                provider_score
+                if is_buyer
+                else buyer_signal_score
+            ),
             source_consistent=self._source_consistent(
                 source_type,
                 procurement_score,
                 project_score,
                 partner_score,
+                buying_signal_score,
             ),
         )
 
@@ -391,7 +515,11 @@ Return only valid JSON with exactly those fields.
 
     @staticmethod
     def _weighted_score(text: str, patterns: Dict[str, float]) -> float:
-        return sum(weight for phrase, weight in patterns.items() if phrase in text)
+        return sum(
+            weight
+            for phrase, weight in patterns.items()
+            if phrase in text
+        )
 
     @staticmethod
     def _normalize_score(score: float, *, scale: float) -> float:
@@ -405,11 +533,16 @@ Return only valid JSON with exactly those fields.
             SOURCE_PROCUREMENT: 1.5,
             SOURCE_DIRECT_PROJECT: 1.5,
             SOURCE_PARTNER_SEARCH: 1.4,
-            SOURCE_GENERAL_WEB: 2.0,
-        }.get(source_type, 2.0)
+            SOURCE_BUYING_SIGNAL: 1.5,
+            SOURCE_GENERAL_WEB: 1.8,
+        }.get(source_type, 1.8)
 
     @staticmethod
-    def _explicit_requirement(text: str, *, source_type: str) -> bool:
+    def _explicit_requirement(
+        text: str,
+        *,
+        source_type: str,
+    ) -> bool:
         if source_type == SOURCE_DIRECT_PROJECT:
             return any(
                 phrase in text
@@ -420,6 +553,33 @@ Return only valid JSON with exactly those fields.
                     "place a bid",
                     "submit a proposal",
                     "deliverables",
+                )
+            )
+
+        if source_type == SOURCE_BUYING_SIGNAL:
+            return any(
+                phrase in text
+                for phrase in (
+                    "mandatory compliance",
+                    "must comply",
+                    "required to comply",
+                    "compliance deadline",
+                    "implementation programme",
+                    "implementation program",
+                    "implementation project",
+                    "planned implementation",
+                    "integration project",
+                    "rollout programme",
+                    "rollout program",
+                    "migration programme",
+                    "migration program",
+                    "digital transformation",
+                    "modernization programme",
+                    "modernisation programme",
+                    "system replacement",
+                    "platform replacement",
+                    "budget approved",
+                    "approved budget",
                 )
             )
 
@@ -447,9 +607,36 @@ Return only valid JSON with exactly those fields.
         *,
         source_type: str,
         explicit_requirement: bool,
+        buying_signal_score: float,
     ) -> bool:
-        if source_type in {SOURCE_DIRECT_PROJECT, SOURCE_PARTNER_SEARCH}:
+        if source_type in {
+            SOURCE_DIRECT_PROJECT,
+            SOURCE_PARTNER_SEARCH,
+        }:
             return explicit_requirement
+
+        if source_type == SOURCE_BUYING_SIGNAL:
+            return (
+                explicit_requirement
+                and buying_signal_score >= 1.5
+                and any(
+                    phrase in text
+                    for phrase in (
+                        "implementation",
+                        "integration",
+                        "migration",
+                        "rollout",
+                        "deployment",
+                        "modernization",
+                        "modernisation",
+                        "digital transformation",
+                        "compliance programme",
+                        "compliance program",
+                        "system replacement",
+                        "platform replacement",
+                    )
+                )
+            )
 
         return any(
             phrase in text
@@ -472,13 +659,32 @@ Return only valid JSON with exactly those fields.
         procurement_score: float,
         project_score: float,
         partner_score: float,
+        buying_signal_score: float,
     ) -> bool:
         if source_type == SOURCE_PROCUREMENT:
-            return procurement_score >= max(project_score, partner_score)
+            return procurement_score >= max(
+                project_score,
+                partner_score,
+                buying_signal_score,
+            )
         if source_type == SOURCE_DIRECT_PROJECT:
-            return project_score >= max(procurement_score, partner_score)
+            return project_score >= max(
+                procurement_score,
+                partner_score,
+                buying_signal_score,
+            )
         if source_type == SOURCE_PARTNER_SEARCH:
-            return partner_score >= max(procurement_score, project_score)
+            return partner_score >= max(
+                procurement_score,
+                project_score,
+                buying_signal_score,
+            )
+        if source_type == SOURCE_BUYING_SIGNAL:
+            return buying_signal_score >= max(
+                procurement_score,
+                project_score,
+                partner_score,
+            )
         return True
 
     @staticmethod
@@ -492,7 +698,12 @@ Return only valid JSON with exactly those fields.
         evidence_component = min(primary_score / 5.0, 1.0)
         margin_component = min(margin / 3.0, 1.0)
         source_component = 0.15 if source_consistent else 0.0
-        confidence = 0.25 + (0.4 * evidence_component) + (0.2 * margin_component) + source_component
+        confidence = (
+            0.25
+            + (0.4 * evidence_component)
+            + (0.2 * margin_component)
+            + source_component
+        )
         return round(min(max(confidence, 0.1), 0.98), 4)
 
     @staticmethod
@@ -503,6 +714,7 @@ Return only valid JSON with exactly those fields.
         procurement_score: float,
         project_score: float,
         partner_score: float,
+        buying_signal_score: float,
         hiring_score: float,
     ) -> DocumentType:
         if "request for quotation" in text or re.search(r"\brfq\b", text):
@@ -515,12 +727,63 @@ Return only valid JSON with exactly those fields.
             return DocumentType.INVITATION_TO_BID
         if "tender" in text:
             return DocumentType.TENDER
-        if hiring_score >= max(procurement_score, project_score, partner_score):
+        if hiring_score >= max(
+            procurement_score,
+            project_score,
+            partner_score,
+            buying_signal_score,
+        ):
             return DocumentType.JOB_POSTING
-        if source_type == SOURCE_PARTNER_SEARCH or partner_score >= max(procurement_score, project_score):
+        if source_type == SOURCE_PARTNER_SEARCH or partner_score >= max(
+            procurement_score,
+            project_score,
+            buying_signal_score,
+        ):
             return DocumentType.PARTNER_REQUEST
-        if source_type == SOURCE_DIRECT_PROJECT or project_score > procurement_score:
+        if source_type == SOURCE_DIRECT_PROJECT or project_score > max(
+            procurement_score,
+            partner_score,
+            buying_signal_score,
+        ):
             return DocumentType.DIRECT_REQUIREMENT
+        if source_type == SOURCE_BUYING_SIGNAL or buying_signal_score > max(
+            procurement_score,
+            project_score,
+            partner_score,
+        ):
+            if any(
+                phrase in text
+                for phrase in (
+                    "digital transformation",
+                    "technology transformation",
+                )
+            ):
+                return DocumentType.DIGITAL_TRANSFORMATION_INITIATIVE
+            if any(
+                phrase in text
+                for phrase in (
+                    "modernization",
+                    "modernisation",
+                    "system replacement",
+                    "platform replacement",
+                    "legacy modernization",
+                )
+            ):
+                return DocumentType.MODERNIZATION_PROJECT
+            if any(
+                phrase in text
+                for phrase in (
+                    "implementation",
+                    "rollout",
+                    "deployment",
+                    "migration",
+                    "integration",
+                    "programme launch",
+                    "program launch",
+                )
+            ):
+                return DocumentType.IMPLEMENTATION_ANNOUNCEMENT
+            return DocumentType.NEWS_ABOUT_REQUIREMENT
         if source_type == SOURCE_PROCUREMENT or procurement_score > 0:
             return DocumentType.PROCUREMENT_NOTICE
         return DocumentType.UNKNOWN
@@ -538,10 +801,13 @@ Return only valid JSON with exactly those fields.
         for sentence in sentences:
             cleaned = re.sub(r"\s+", " ", sentence).strip()
             lowered = cleaned.casefold()
+
             if not cleaned:
                 continue
+
             if any(phrase in lowered for phrase in phrases):
                 found.append(cleaned[:300])
+
             if len(found) >= limit:
                 break
 
@@ -550,15 +816,37 @@ Return only valid JSON with exactly those fields.
     @staticmethod
     def _result_from_mapping(data: dict) -> QualificationResult:
         return QualificationResult(
-            document_type=DocumentType(data.get("document_type", "unknown")),
-            is_service_requirement=bool(data.get("is_service_requirement", False)),
-            organization_role=OrganizationRole(data.get("organization_role", "unknown")),
-            requirement_status=RequirementStatus(data.get("requirement_status", "unclear")),
-            buyer_intent_score=float(data.get("buyer_intent_score", 0.0)),
-            provider_probability=float(data.get("provider_probability", 0.0)),
-            explicit_requirement=bool(data.get("explicit_requirement", False)),
-            requires_external_supplier=bool(data.get("requires_external_supplier", False)),
-            evidence_quotes=list(data.get("evidence_quotes", []))[:3],
-            rejection_reasons=list(data.get("rejection_reasons", [])),
-            confidence=float(data.get("confidence", 0.5)),
+            document_type=DocumentType(
+                data.get("document_type", "unknown")
+            ),
+            is_service_requirement=bool(
+                data.get("is_service_requirement", False)
+            ),
+            organization_role=OrganizationRole(
+                data.get("organization_role", "unknown")
+            ),
+            requirement_status=RequirementStatus(
+                data.get("requirement_status", "unclear")
+            ),
+            buyer_intent_score=float(
+                data.get("buyer_intent_score", 0.0)
+            ),
+            provider_probability=float(
+                data.get("provider_probability", 0.0)
+            ),
+            explicit_requirement=bool(
+                data.get("explicit_requirement", False)
+            ),
+            requires_external_supplier=bool(
+                data.get("requires_external_supplier", False)
+            ),
+            evidence_quotes=list(
+                data.get("evidence_quotes", [])
+            )[:3],
+            rejection_reasons=list(
+                data.get("rejection_reasons", [])
+            ),
+            confidence=float(
+                data.get("confidence", 0.5)
+            ),
         )

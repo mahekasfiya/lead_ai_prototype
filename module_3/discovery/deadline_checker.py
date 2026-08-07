@@ -30,7 +30,7 @@ class DeadlineAssessment:
         return self.status == "unknown"
 
 
-DEADLINE_LABEL_PATTERN = re.compile(
+STRONG_DEADLINE_LABEL_PATTERN = re.compile(
     r"""
     (?:
         submission\s+deadline
@@ -41,7 +41,8 @@ DEADLINE_LABEL_PATTERN = re.compile(
         |response\s+deadline
         |closing\s+date
         |closing\s+time
-        |last\s+date(?:\s+and\s+time)?(?:\s+for\s+(?:bid\s+)?submission)?
+        |last\s+date(?:\s+and\s+time)?
+            (?:\s+for\s+(?:bid\s+)?submission)?
         |deadline\s+for\s+submission
         |bid\s+closing(?:\s+date|\s+time)?
         |tender\s+closing(?:\s+date|\s+time)?
@@ -50,28 +51,56 @@ DEADLINE_LABEL_PATTERN = re.compile(
         |submit\s+(?:by|before)
         |due\s+date
         |submission\s+date
-        |proposal\s+submission(?:\s+date|\s+deadline)?
-        |bid\s+submission(?:\s+end)?(?:\s+date|\s+deadline)?
+        |proposal\s+submission
+            (?:\s+date|\s+deadline)?
+        |bid\s+submission
+            (?:\s+end)?
+            (?:\s+date|\s+deadline)?
         |submission\s+end\s+date
         |response\s+due(?:\s+date)?
         |offer\s+due(?:\s+date)?
         |quotation\s+due(?:\s+date)?
         |rfp\s+due(?:\s+date)?
         |rfq\s+due(?:\s+date)?
-        |deadline
-        |proposals shall be received
-        |responses must be received
-        |sealed proposals
-        |sealed bids
-        |electronic proposals
-        |electronic bids
-        |proposal opening
-        |bid opening
-        |submission closes
-        |closing of bids
-        |closing of proposals
-        |proposal receipt
-        |bid receipt
+        |proposals?\s+shall\s+be\s+received
+        |responses?\s+must\s+be\s+received
+        |submission\s+closes
+        |closing\s+of\s+bids
+        |closing\s+of\s+proposals
+        |proposal\s+receipt
+        |bid\s+receipt
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+
+AMBIGUOUS_DEADLINE_LABEL_PATTERN = re.compile(
+    r"""
+    (?:
+        proposal\s+opening
+        |bid\s+opening
+        |sealed\s+proposals
+        |sealed\s+bids
+        |electronic\s+proposals
+        |electronic\s+bids
+        |question\s+deadline
+        |clarification\s+deadline
+        |pre[-\s]?bid\s+meeting
+        |award\s+date
+        |contract\s+start
+    )
+    """,
+    re.IGNORECASE | re.VERBOSE,
+)
+
+HISTORICAL_DEADLINE_PATTERN = re.compile(
+    r"""
+    (?:
+        original\s+deadline
+        |previous\s+deadline
+        |former\s+deadline
+        |initial\s+deadline
     )
     """,
     re.IGNORECASE | re.VERBOSE,
@@ -135,8 +164,8 @@ MONTHS = {
 
 EXPIRED_LANGUAGE = {
     'closed', 'expired', 'deadline has passed', 'submission period has ended',
-    'no longer accepting', 'tender closed', 'bidding closed',
-    'applications closed', 'archived tender', 'solicitation closed',
+    'no longer accepting', 'tender closed','tender is closed', 'bidding closed','bidding is closed',
+    'applications closed','applications are closed', 'archived tender', 'solicitation closed','opportunity is closed',
     'opportunity closed', 'responses are no longer being accepted',
     'bid submission closed', 'proposal submission closed',
     'contract awarded', 'award notice', 'cancelled solicitation',
@@ -152,7 +181,13 @@ ACTIVE_LANGUAGE = {
 
 
 class DeadlineChecker:
-    def __init__(self, *, today: date | None = None, grace_days: int = 0, context_window: int = 2000):
+    def __init__(
+            self,
+            *,
+            today: date | None = None,
+            grace_days: int = 0,
+            context_window: int = 500,
+    ):
         self.today = today or date.today()
         self.grace_days = max(0, grace_days)
         self.context_window = max(80, context_window)
@@ -175,41 +210,82 @@ class DeadlineChecker:
         except (KeyError, TypeError, ValueError):
             return None
 
-    def _extract_labeled_dates(self, text: str) -> list[tuple[date, str, int]]:
-        candidates: list[tuple[date, str, int]] = []
+    def _extract_labeled_dates(
+            self,
+            text: str,
+    ) -> list[tuple[date, str, int, bool]]:
+        """
+        Extract dates near deadline-related labels.
+        The final boolean indicates whether the label is a strong
+        submission-deadline label.
+        """
+        candidates: list[tuple[date, str, int, bool]] = []
+        label_groups = (
+            (STRONG_DEADLINE_LABEL_PATTERN, True),
+            (AMBIGUOUS_DEADLINE_LABEL_PATTERN, False),
+        )
+        
+        for label_pattern, is_strong in label_groups:
+            for label_match in label_pattern.finditer(text):
+                start = max(0, label_match.start() - 120)
+                end = min(
+                    len(text),
+                    label_match.end() + self.context_window,
+                )
+                context = text[start:end]
+                label_start = label_match.start() - start
+                label_end = label_match.end() - start
 
-        for label_match in DEADLINE_LABEL_PATTERN.finditer(text):
-            start = max(0, label_match.start() - 120)
-            end = min(len(text), label_match.end() + self.context_window)
-            context = text[start:end]
-            label_start = label_match.start() - start
-            label_end = label_match.end() - start
+                historical_context = text[
+                     max(0, label_match.start() - 30):
+                     label_match.end() + 30
+                ]
+                if HISTORICAL_DEADLINE_PATTERN.search(
+                    historical_context
+                ):
+                    continue
 
-            for pattern in DATE_PATTERNS:
-                for date_match in pattern.finditer(context):
-                    parsed = self._parse_date_match(date_match)
-                    if parsed is None:
-                        continue
-
-                    # Prefer dates after the deadline label. Dates before the
-                    # label receive a penalty because they are often issue dates.
-                    if date_match.start() >= label_end:
-                        distance = date_match.start() - label_end
-                    else:
-                        distance = (
-                            label_start - date_match.end()
-                            + self.context_window
+                for pattern in DATE_PATTERNS:
+                    for date_match in pattern.finditer(context):
+                        parsed = self._parse_date_match(
+                            date_match
                         )
 
-                    excerpt_start = min(label_start, date_match.start())
-                    excerpt_end = max(label_end, date_match.end())
-                    matched_text = context[
-                        excerpt_start:excerpt_end
-                    ].strip(' :-–—')
+                        if parsed is None:
+                            continue
 
-                    candidates.append(
-                        (parsed, matched_text, distance)
-                    )
+                        if date_match.start() >= label_end:
+                            distance = (
+                                date_match.start() - label_end
+                            )
+                        else:
+                            distance = (
+                                label_start
+                                - date_match.end()
+                                + self.context_window
+                            )
+
+                        excerpt_start = min(
+                            label_start,
+                            date_match.start(),
+                        )
+                        excerpt_end = max(
+                            label_end,
+                            date_match.end(),
+                        )
+
+                        matched_text = context[
+                            excerpt_start:excerpt_end
+                        ].strip(" :-–—")
+
+                        candidates.append(
+                            (
+                                parsed,
+                                matched_text,
+                                distance,
+                                is_strong,
+                            )
+                        )
 
         return candidates
 
@@ -224,30 +300,67 @@ class DeadlineChecker:
         active_phrases = sorted(phrase for phrase in ACTIVE_LANGUAGE if phrase in lowered)
         labeled_dates = self._extract_labeled_dates(combined)
 
-        if labeled_dates:
-            labeled_dates.sort(key=lambda item: (item[2], -item[0].toordinal()))
-            best_distance = labeled_dates[0][2]
-            nearest = [item for item in labeled_dates if item[2] == best_distance]
-            selected_date, matched_text, _ = max(nearest, key=lambda item: item[0])
-            expiry_cutoff = selected_date.toordinal() + self.grace_days
+        if expired_phrases and not active_phrases:
+                    return DeadlineAssessment(
+                        'expired', None, expired_phrases[0],
+                        'The page explicitly states that the opportunity is closed or expired.',
+                        0.82,
+                    )
 
+        if labeled_dates:
+            strong_dates = [
+                item
+                for item in labeled_dates
+                if item[3] is True
+            ]
+            candidate_pool = (
+                strong_dates
+                if strong_dates
+                else labeled_dates
+            )
+            candidate_pool.sort(
+                key=lambda item: (
+                    item[2],
+                    -item[0].toordinal(),
+                )
+            )
+            best_distance = candidate_pool[0][2]
+            nearest = [
+                item
+                for item in candidate_pool
+                if item[2] == best_distance
+            ]
+            selected_date, matched_text, _, is_strong = max(
+                nearest,
+                key=lambda item: item[0],
+            )
+            expiry_cutoff = (
+                selected_date.toordinal()
+                + self.grace_days
+            )
+            confidence = 0.96 if is_strong else 0.55
             if self.today.toordinal() > expiry_cutoff:
                 return DeadlineAssessment(
-                    'expired', selected_date, matched_text,
-                    f'Detected submission deadline {selected_date.isoformat()}, which is before {self.today.isoformat()}.',
-                    0.96,
+                    "expired",
+                    selected_date,
+                    matched_text,
+                    (
+                        "Detected submission deadline "
+                        f"{selected_date.isoformat()}, which is before "
+                        f"{self.today.isoformat()}."
+                    ),
+                    confidence,
                 )
             return DeadlineAssessment(
-                'active', selected_date, matched_text,
-                f'Detected submission deadline {selected_date.isoformat()}, which has not passed as of {self.today.isoformat()}.',
-                0.96,
-            )
-
-        if expired_phrases and not active_phrases:
-            return DeadlineAssessment(
-                'expired', None, expired_phrases[0],
-                'The page explicitly states that the opportunity is closed or expired.',
-                0.82,
+                "active",
+                selected_date,
+                matched_text,
+                (
+                    "Detected submission deadline "
+                    f"{selected_date.isoformat()}, which has not passed "
+                    f"as of {self.today.isoformat()}."
+                ),
+                confidence,
             )
 
         if active_phrases and not expired_phrases:

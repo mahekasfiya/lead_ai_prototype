@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import csv
+import io
 from datetime import datetime
 
 import requests
@@ -13,6 +15,8 @@ DISCOVER_LEADS_URL = f"{API_BASE_URL}/discover-leads"
 GENERATE_EMAIL_URL = f"{API_BASE_URL}/generate-email"
 DISCOVER_POTENTIAL_LEADS_URL = f"{API_BASE_URL}/discover-potential-leads"
 GENERATE_LINKEDIN_MESSAGE_URL = f"{API_BASE_URL}/generate-linkedin-message"
+DISCOVER_COMPANIES_URL = f"{API_BASE_URL}/discover-companies"
+ANALYZE_LINKEDIN_URL = f"{API_BASE_URL}/analyze-linkedin-profile"
 
 
 st.set_page_config(
@@ -22,8 +26,10 @@ st.set_page_config(
 )
 
 
+# ------------------------------
+# Helper functions (unchanged)
+# ------------------------------
 def check_api() -> tuple[bool, dict]:
-    """Check whether the FastAPI backend is ready."""
     try:
         response = requests.get(READINESS_URL, timeout=10)
         if response.status_code == 200:
@@ -34,7 +40,6 @@ def check_api() -> tuple[bool, dict]:
 
 
 def discover_leads(payload: dict) -> dict:
-    """Call the FastAPI lead-discovery endpoint."""
     response = requests.post(DISCOVER_LEADS_URL, json=payload, timeout=(15, 1800))
     if response.status_code != 200:
         raise RuntimeError(f"Lead discovery failed: {response.status_code} {response.text}")
@@ -42,15 +47,27 @@ def discover_leads(payload: dict) -> dict:
 
 
 def discover_potential_leads(payload: dict) -> dict:
-    """Call the FastAPI potential-lead discovery endpoint."""
     response = requests.post(DISCOVER_POTENTIAL_LEADS_URL, json=payload, timeout=1800)
     if response.status_code != 200:
         raise RuntimeError(f"Potential leads discovery failed: {response.text}")
     return response.json()
 
 
+def discover_companies(payload: dict) -> dict:
+    response = requests.post(DISCOVER_COMPANIES_URL, json=payload, timeout=1800)
+    if response.status_code != 200:
+        raise RuntimeError(f"Company discovery failed: {response.text}")
+    return response.json()
+
+
+def analyze_linkedin(payload: dict) -> dict:
+    response = requests.post(ANALYZE_LINKEDIN_URL, json=payload, timeout=60)
+    if response.status_code != 200:
+        raise RuntimeError(f"LinkedIn analysis failed: {response.text}")
+    return response.json()
+
+
 def generate_email_for_lead(lead_data: dict) -> str:
-    """Call the /generate-email endpoint and return the draft."""
     try:
         payload = {
             "lead": lead_data,
@@ -65,7 +82,6 @@ def generate_email_for_lead(lead_data: dict) -> str:
 
 
 def generate_linkedin_message(lead: dict) -> str:
-    """Call the /generate-linkedin-message endpoint and return the draft."""
     try:
         response = requests.post(GENERATE_LINKEDIN_MESSAGE_URL, json={"lead": lead}, timeout=30)
         if response.status_code == 200:
@@ -223,6 +239,7 @@ def display_manual_review(manual_review: list[dict], developer_mode: bool) -> No
 st.title("Triway Lead Intelligence")
 st.caption("Search the web for organizations showing demand for services offered by Triway Technologies.")
 
+# ---------- API readiness ----------
 api_ready, readiness = check_api()
 if not api_ready:
     st.error("The FastAPI backend is not available.")
@@ -234,7 +251,7 @@ if not api_ready:
 st.success(f"Backend connected successfully. {readiness.get('service_count', 0)} services loaded.")
 service_count = int(readiness.get("service_count", 0) or 0)
 
-# Sidebar
+# ---------- Sidebar (unchanged) ----------
 with st.sidebar:
     st.header("Dashboard")
     developer_mode = st.toggle("Developer Mode", value=False)
@@ -272,146 +289,273 @@ with st.sidebar:
     if developer_mode:
         st.write(f"**Embedding version:** {readiness.get('embedding_version', '-')}")
 
-# ------------------------------
-# Section 1: Sales Opportunities (existing pipeline)
-# ------------------------------
-st.subheader("Sales Opportunities")
-st.write("Run a fresh scan for organizations currently showing buying intent for Triway services.")
-last_scan = st.session_state.get("last_scan_time")
-st.caption(f"Last scan: {last_scan}" if last_scan else "No scan has been run in this session.")
+# ---------- Tabs for main features ----------
+tabs = st.tabs([
+    "📊 Sales Opportunities",
+    "🎯 Potential Leads",
+    "🏢 Company Discovery",
+    "🔍 Profile Analyzer"
+])
 
-if st.button("Generate New Opportunities", type="primary", use_container_width=True):
-    payload = {
-        "queries_per_service": queries_per_service,
-        "max_total_queries": max_total_queries,
-        "results_per_query": results_per_query,
-        "max_leads": max_leads,
-        "minimum_similarity": minimum_similarity,
-        "selected_service_ids": [],
-    }
-    with st.spinner("Scanning for current buying opportunities, validating sources, matching Triway services, and completing final validation..."):
-        try:
-            result = discover_leads(payload)
-        except Exception as exc:
-            st.error(str(exc))
+# ---- Tab 1: Sales Opportunities ----
+with tabs[0]:
+    st.subheader("Sales Opportunities")
+    st.write("Run a fresh scan for organizations currently showing buying intent for Triway services.")
+    last_scan = st.session_state.get("last_scan_time")
+    st.caption(f"Last scan: {last_scan}" if last_scan else "No scan has been run in this session.")
+
+    if st.button("Generate New Opportunities", type="primary", use_container_width=True):
+        payload = {
+            "queries_per_service": queries_per_service,
+            "max_total_queries": max_total_queries,
+            "results_per_query": results_per_query,
+            "max_leads": max_leads,
+            "minimum_similarity": minimum_similarity,
+            "selected_service_ids": [],
+        }
+        with st.spinner("Scanning for current buying opportunities, validating sources, matching Triway services, and completing final validation..."):
+            try:
+                result = discover_leads(payload)
+            except Exception as exc:
+                st.error(str(exc))
+            else:
+                st.session_state["latest_result"] = result
+                st.session_state["last_scan_time"] = datetime.now().strftime("%d %b %Y, %I:%M %p")
+                st.success(f"Discovery complete. {result.get('leads_found', 0)} validated opportunities and {result.get('manual_review_count', 0)} manual-review items found.")
+
+    result = st.session_state.get("latest_result")
+    if result:
+        st.divider()
+        display_metrics(result)
+        leads = result.get("leads", [])
+        manual_review = result.get("manual_review", [])
+        validated_tab, manual_review_tab = st.tabs([f"✅ Validated Leads ({len(leads)})", f"🟠 Manual Review ({len(manual_review)})"])
+        with validated_tab:
+            display_validated_leads(leads, developer_mode)
+        with manual_review_tab:
+            display_manual_review(manual_review, developer_mode)
+        if developer_mode:
+            with st.expander("Search Queries Executed"):
+                for idx, q in enumerate(result.get("queries_executed", []), 1):
+                    st.write(f"{idx}. {q}")
+            with st.expander("Raw Discovery Response"):
+                st.json(result)
+
+# ---- Tab 2: Potential Leads ----
+with tabs[1]:
+    st.subheader("🎯 Potential Leads")
+    st.caption("Discover decision-makers on LinkedIn using flexible criteria. Enter any industries, job titles, and countries you want.")
+
+    with st.form(key="potential_leads_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            industries_input = st.text_input(
+                "Industries (comma separated)",
+                value="Finance, Banking, Technology",
+                placeholder="e.g., Finance, Healthcare, Manufacturing"
+            )
+            countries_input = st.text_input(
+                "Countries (comma separated)",
+                value="UAE, Saudi Arabia, Oman",
+                placeholder="e.g., UAE, Saudi Arabia, United Kingdom"
+            )
+            titles_input = st.text_input(
+                "Job Titles (comma separated)",
+                value="CIO, CTO, IT Director, Head of IT",
+                placeholder="e.g., CIO, CTO, IT Director, VP Engineering"
+            )
+        with col2:
+            min_employees = st.number_input("Min Employees", min_value=0, value=50, step=10)
+            max_employees = st.number_input("Max Employees", min_value=0, value=500, step=10)
+            revenue = st.text_input("Revenue Range (optional)", placeholder="e.g., $10M-$50M")
+            technologies = st.text_input("Technologies (comma separated)", placeholder="e.g., AWS, Azure, Salesforce")
+            recent_funding = st.checkbox("Recent Funding", value=False)
+
+        submitted = st.form_submit_button("🔍 Discover Potential Leads")
+
+    if submitted:
+        industries = [i.strip() for i in industries_input.split(",") if i.strip()]
+        countries = [c.strip() for c in countries_input.split(",") if c.strip()]
+        titles = [t.strip() for t in titles_input.split(",") if t.strip()]
+        tech_list = [t.strip() for t in technologies.split(",") if t.strip()] if technologies else []
+
+        payload = {
+            "industries": industries,
+            "countries": countries,
+            "titles": titles,
+            "min_employees": min_employees if min_employees > 0 else None,
+            "max_employees": max_employees if max_employees > 0 else None,
+            "revenue": revenue if revenue else None,
+            "technologies": tech_list,
+            "recent_funding": recent_funding,
+        }
+        payload = {k: v for k, v in payload.items() if v is not None and v != []}
+        with st.spinner("Searching for potential leads..."):
+            try:
+                potential_result = discover_potential_leads(payload)
+                st.session_state["potential_leads_result"] = potential_result
+            except Exception as exc:
+                st.error(str(exc))
+
+    potential_result = st.session_state.get("potential_leads_result")
+    if potential_result:
+        leads = potential_result.get("leads", [])
+        st.success(f"Found {len(leads)} potential leads.")
+        if leads:
+            for idx, person in enumerate(leads, start=1):
+                with st.expander(f"{idx}. {person.get('name')} — {person.get('job_title', '')} at {person.get('company', '')}", expanded=idx==1):
+                    col1, col2, col3, col4 = st.columns(4)
+                    col1.write(f"**LinkedIn:** [Link]({person.get('linkedin_url')})" if person.get("linkedin_url") else "**LinkedIn:** N/A")
+                    col2.write(f"**Company:** {person.get('company') or 'N/A'}")
+                    col3.write(f"**Industry:** {person.get('industry') or 'N/A'}")
+                    col4.write(f"**Country:** {person.get('country') or 'N/A'}")
+                    st.write(f"**Score:** {person.get('score', 0)}")
+
+                    msg_key = f"linkedin_msg_{idx}"
+                    if st.button("💬 Generate LinkedIn Message", key=f"msg_btn_{idx}"):
+                        with st.spinner("Generating personalized message..."):
+                            msg = generate_linkedin_message(person)
+                            st.session_state[msg_key] = msg
+                    if st.session_state.get(msg_key):
+                        st.markdown("### 📨 LinkedIn Message Draft")
+                        st.text_area("Message", st.session_state[msg_key], height=200, key=f"msg_text_{idx}")
+                        st.caption("Copy this message and send it as a connection note or InMail.")
+
+            if st.button("📥 Export CSV"):
+                output = io.StringIO()
+                writer = csv.DictWriter(output, fieldnames=["name", "linkedin_url", "company", "job_title", "industry", "country", "score"])
+                writer.writeheader()
+                for lead in leads:
+                    writer.writerow({
+                        "name": lead.get("name"),
+                        "linkedin_url": lead.get("linkedin_url"),
+                        "company": lead.get("company"),
+                        "job_title": lead.get("job_title"),
+                        "industry": lead.get("industry"),
+                        "country": lead.get("country"),
+                        "score": lead.get("score", 0),
+                    })
+                st.download_button("Download CSV", output.getvalue(), "potential_leads.csv", "text/csv")
+
+# ---- Tab 3: Company Discovery ----
+with tabs[2]:
+    st.subheader("🏢 Company Discovery")
+    st.caption("Find companies on specific websites or directories, enriched with industry, country, and IT service signals.")
+
+    with st.form(key="company_discovery_form"):
+        col1, col2 = st.columns(2)
+        with col1:
+            websites_input = st.text_input(
+                "Websites to search (comma separated)",
+                value="dubaichamber.com, yellowpages-uae.com, ae.kompass.com",
+                placeholder="e.g., dubaichamber.com, yellowpages-uae.com, ded.ae"
+            )
+            company_industries = st.text_input(
+                "Industries (comma separated)",
+                value="Technology, Finance, Healthcare, Manufacturing",
+                placeholder="e.g., Technology, Finance, Healthcare"
+            )
+        with col2:
+            company_countries = st.text_input(
+                "Countries (comma separated)",
+                value="UAE, Saudi Arabia, Oman",
+                placeholder="e.g., UAE, Saudi Arabia, Oman"
+            )
+            min_company_employees = st.number_input("Min Employees", min_value=0, value=50, step=10)
+            max_company_employees = st.number_input("Max Employees", min_value=0, value=500, step=10)
+        submitted_companies = st.form_submit_button("🔍 Discover Companies")
+
+    if submitted_companies:
+        selected_websites = [w.strip() for w in websites_input.split(",") if w.strip()]
+        industry_list = [i.strip() for i in company_industries.split(",") if i.strip()]
+        country_list = [c.strip() for c in company_countries.split(",") if c.strip()]
+
+        payload = {
+            "websites": selected_websites if selected_websites else None,
+            "industries": industry_list if industry_list else None,
+            "countries": country_list if country_list else None,
+            "min_employees": min_company_employees if min_company_employees > 0 else None,
+            "max_employees": max_company_employees if max_company_employees > 0 else None,
+        }
+        payload = {k: v for k, v in payload.items() if v not in ([], None)}
+
+        with st.spinner("Searching companies..."):
+            try:
+                comp_result = discover_companies(payload)
+                st.session_state["company_discovery_result"] = comp_result
+                st.rerun()
+            except Exception as exc:
+                st.error(str(exc))
+
+    if "company_discovery_result" in st.session_state:
+        comp_result = st.session_state["company_discovery_result"]
+        comps = comp_result.get("companies", [])
+        st.success(f"Found {len(comps)} companies.")
+        if comps:
+            for idx, comp in enumerate(comps, start=1):
+                with st.expander(f"{idx}. {comp.get('name')} — {comp.get('industry', 'N/A')}", expanded=idx==1):
+                    c1, c2, c3 = st.columns(3)
+                    c1.write(f"**Domain:** {comp.get('domain', 'N/A')}")
+                    c2.write(f"**Country:** {comp.get('country', 'N/A')}")
+                    c3.write(f"**Score:** {comp.get('score', 0)}")
+                    st.write(f"**Source:** {comp.get('source_site', 'N/A')}")
+                    if comp.get("url"):
+                        st.write(f"**URL:** {comp['url']}")
+                    if comp.get("buying_signals"):
+                        st.write("**Buying Signals:** " + ", ".join(comp["buying_signals"]))
+                    if comp.get("requires_it_services"):
+                        st.write("**Requires IT Services:** ✅")
+                    if comp.get("contacts"):
+                        st.write("**Contacts:**")
+                        for contact in comp["contacts"]:
+                            st.write(f"- {contact.get('title', 'N/A')}: {contact.get('email', '')} {contact.get('phone', '')}")
+            if st.button("📥 Export Companies CSV"):
+                output = io.StringIO()
+                writer = csv.DictWriter(output, fieldnames=["name", "domain", "industry", "country", "score", "contacts", "source_site"])
+                writer.writeheader()
+                for comp in comps:
+                    writer.writerow({
+                        "name": comp.get("name"),
+                        "domain": comp.get("domain"),
+                        "industry": comp.get("industry"),
+                        "country": comp.get("country"),
+                        "score": comp.get("score", 0),
+                        "contacts": comp.get("contacts", []),
+                        "source_site": comp.get("source_site"),
+                    })
+                st.download_button("Download", output.getvalue(), "companies.csv", "text/csv")
         else:
-            st.session_state["latest_result"] = result
-            st.session_state["last_scan_time"] = datetime.now().strftime("%d %b %Y, %I:%M %p")
-            st.success(f"Discovery complete. {result.get('leads_found', 0)} validated opportunities and {result.get('manual_review_count', 0)} manual-review items found.")
+            st.info("No companies found matching your criteria.")
+        if developer_mode:
+            with st.expander("Raw Company Discovery Response"):
+                st.json(comp_result)
 
-result = st.session_state.get("latest_result")
-if result:
-    st.divider()
-    display_metrics(result)
-    leads = result.get("leads", [])
-    manual_review = result.get("manual_review", [])
-    validated_tab, manual_review_tab = st.tabs([f"✅ Validated Leads ({len(leads)})", f"🟠 Manual Review ({len(manual_review)})"])
-    with validated_tab:
-        display_validated_leads(leads, developer_mode)
-    with manual_review_tab:
-        display_manual_review(manual_review, developer_mode)
-    if developer_mode:
-        with st.expander("Search Queries Executed"):
-            for idx, q in enumerate(result.get("queries_executed", []), 1):
-                st.write(f"{idx}. {q}")
-        with st.expander("Raw Discovery Response"):
-            st.json(result)
+# ---- Tab 4: LinkedIn Profile Analyzer ----
+with tabs[3]:
+    st.subheader("🔍 LinkedIn Profile Analyzer")
+    st.caption("Paste a LinkedIn profile URL (and optional text) to get a professional summary and a draft outreach message.")
 
-# ------------------------------
-# Section 2: Potential Leads
-# ------------------------------
-st.divider()
-st.subheader("🎯 Potential Leads")
-st.caption("Discover companies and decision-makers based on custom criteria. Results include LinkedIn profiles.")
+    with st.form(key="linkedin_analyze_form"):
+        linkedin_url = st.text_input("LinkedIn Profile URL", placeholder="https://www.linkedin.com/in/username/")
+        linkedin_text = st.text_area("Additional Context (optional)", placeholder="Paste any notes or profile text you have (e.g., About section, summary).")
+        submitted_analyze = st.form_submit_button("Analyze Profile")
 
-# Criteria form
-with st.form(key="potential_leads_form"):
-    col1, col2 = st.columns(2)
-    with col1:
-        industries = st.multiselect(
-            "Industries",
-            options=["Finance", "Banking", "Fintech", "Healthcare", "Technology", "Retail", "Manufacturing", "Energy", "Government"],
-            default=["Finance"],
-        )
-        countries = st.multiselect(
-            "Countries",
-            options=["UAE", "Saudi Arabia", "United Kingdom", "United States", "India", "Singapore"],
-            default=["UAE"],
-        )
-        titles = st.multiselect(
-            "Job Titles",
-            options=["CIO", "CTO", "IT Director", "Head of IT", "VP Engineering", "Procurement Manager", "Chief Digital Officer"],
-            default=["CIO", "CTO", "IT Director"],
-        )
-    with col2:
-        min_employees = st.number_input("Min Employees", min_value=0, value=50, step=10)
-        max_employees = st.number_input("Max Employees", min_value=0, value=500, step=10)
-        revenue = st.text_input("Revenue Range (optional)", placeholder="e.g., $10M-$50M")
-        technologies = st.text_input("Technologies (comma separated)", placeholder="e.g., AWS, Azure, Salesforce")
-        recent_funding = st.checkbox("Recent Funding", value=False)
+    if submitted_analyze and linkedin_url:
+        with st.spinner("Analyzing profile..."):
+            try:
+                payload = {
+                    "url": linkedin_url,
+                    "text": linkedin_text if linkedin_text and linkedin_text.strip() else None
+                }
+                analysis_result = analyze_linkedin(payload)
+                st.session_state["linkedin_analysis"] = analysis_result
+            except Exception as exc:
+                st.error(str(exc))
 
-    submitted = st.form_submit_button("🔍 Discover Potential Leads")
-
-if submitted:
-    payload = {
-        "industries": industries,
-        "countries": countries,
-        "titles": titles,
-        "min_employees": min_employees if min_employees > 0 else None,
-        "max_employees": max_employees if max_employees > 0 else None,
-        "revenue": revenue if revenue else None,
-        "technologies": [t.strip() for t in technologies.split(",")] if technologies else [],
-        "recent_funding": recent_funding,
-    }
-    # Remove None values
-    payload = {k: v for k, v in payload.items() if v is not None and v != []}
-    with st.spinner("Searching for potential leads..."):
-        try:
-            potential_result = discover_potential_leads(payload)
-            st.session_state["potential_leads_result"] = potential_result
-        except Exception as exc:
-            st.error(str(exc))
-
-potential_result = st.session_state.get("potential_leads_result")
-if potential_result:
-    leads = potential_result.get("leads", [])
-    st.success(f"Found {len(leads)} potential leads.")
-    if leads:
-        for idx, person in enumerate(leads, start=1):
-            with st.expander(f"{idx}. {person.get('name')} — {person.get('job_title', '')} at {person.get('company', '')}", expanded=idx==1):
-                col1, col2, col3, col4 = st.columns(4)
-                col1.write(f"**LinkedIn:** [Link]({person.get('linkedin_url')})" if person.get("linkedin_url") else "**LinkedIn:** N/A")
-                col2.write(f"**Company:** {person.get('company') or 'N/A'}")
-                col3.write(f"**Industry:** {person.get('industry') or 'N/A'}")
-                col4.write(f"**Country:** {person.get('country') or 'N/A'}")
-                st.write(f"**Score:** {person.get('score', 0)}")
-
-                # LinkedIn message generation
-                msg_key = f"linkedin_msg_{idx}"
-                if st.button("💬 Generate LinkedIn Message", key=f"msg_btn_{idx}"):
-                    with st.spinner("Generating personalized message..."):
-                        msg = generate_linkedin_message(person)
-                        st.session_state[msg_key] = msg
-                if st.session_state.get(msg_key):
-                    st.markdown("### 📨 LinkedIn Message Draft")
-                    st.text_area("Message", st.session_state[msg_key], height=200, key=f"msg_text_{idx}")
-                    st.caption("Copy this message and send it as a connection note or InMail.")
-
-        # CSV export option
-        if st.button("📥 Export CSV"):
-            import io
-            import csv
-            output = io.StringIO()
-            writer = csv.DictWriter(output, fieldnames=["name", "linkedin_url", "company", "job_title", "industry", "country", "score"])
-            writer.writeheader()
-            for lead in leads:
-                writer.writerow({
-                    "name": lead.get("name"),
-                    "linkedin_url": lead.get("linkedin_url"),
-                    "company": lead.get("company"),
-                    "job_title": lead.get("job_title"),
-                    "industry": lead.get("industry"),
-                    "country": lead.get("country"),
-                    "score": lead.get("score", 0),
-                })
-            st.download_button("Download CSV", output.getvalue(), "potential_leads.csv", "text/csv")
+    if "linkedin_analysis" in st.session_state:
+        data = st.session_state["linkedin_analysis"]
+        st.markdown("### 📋 Summary")
+        st.write(data.get("summary", "N/A"))
+        st.markdown("### ✉️ Draft Message")
+        st.text_area("Message", data.get("message", "N/A"), height=200)
+        st.caption("Copy this message and send it as a connection note or InMail.")

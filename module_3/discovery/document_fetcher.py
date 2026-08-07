@@ -101,12 +101,27 @@ class DocumentFetcher:
 
     @staticmethod
     def _retry_after_seconds(response: requests.Response) -> float | None:
+        """
+        Returns the retry delay suggested by the server.
+        To avoid a single rate-limited website blocking the entire discovery
+        pipeline, cap Retry-After to MAX_RETRY_AFTER_SECONDS.
+        """
+        MAX_RETRY_AFTER_SECONDS = 10.0
         value = response.headers.get("Retry-After")
         if not value:
             return None
         try:
-            return max(0.0, float(value.strip()))
-        except ValueError:
+            retry_after = max(0.0, float(value.strip()))
+            if retry_after > MAX_RETRY_AFTER_SECONDS:
+                logger.warning(
+                    "Retry-After %.1fs exceeds maximum %.1fs. "
+                    "Capping retry delay.",
+                    retry_after,
+                    MAX_RETRY_AFTER_SECONDS,
+                )
+                return MAX_RETRY_AFTER_SECONDS
+            return retry_after
+        except (TypeError, ValueError):
             return None
 
     def _retry_delay(

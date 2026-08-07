@@ -4,7 +4,7 @@ import logging
 from dataclasses import dataclass
 from typing import Any
 
-from module_3.schemas import QualificationResult, OrganizationRole
+from module_3.schemas import QualificationResult, OrganizationRole, DocumentType
 from module_3.discovery.models import SearchCandidate, FetchedDocument
 
 logger = logging.getLogger(__name__)
@@ -24,28 +24,42 @@ class QualificationDecision:
 
 
 class QualificationGate:
-    """Apply source-aware qualification rules to discovered opportunities."""
+    """Apply source- and intent-aware qualification rules."""
 
     SOURCE_ALIASES = {
         "procurement": "PROCUREMENT",
         "tender": "PROCUREMENT",
         "rfp": "PROCUREMENT",
         "rfq": "PROCUREMENT",
+        "formal_procurement": "PROCUREMENT",
+        "official_procurement": "PROCUREMENT",
+
         "direct_project": "DIRECT_PROJECT",
         "marketplace": "DIRECT_PROJECT",
         "freelancer": "DIRECT_PROJECT",
         "peopleperhour": "DIRECT_PROJECT",
+
         "partner_search": "PARTNER_SEARCH",
         "partner": "PARTNER_SEARCH",
-        "general_web": "PARTNER_SEARCH",
+
+        # General-web strategies that represent real buying signals but may
+        # not contain an explicit RFP or vendor invitation.
+        "general_web": "BUYING_SIGNAL",
+        "regulatory_trigger": "BUYING_SIGNAL",
+        "implementation_announcement": "BUYING_SIGNAL",
+        "digital_transformation": "BUYING_SIGNAL",
+        "modernization_project": "BUYING_SIGNAL",
+        "technology_requirement": "BUYING_SIGNAL",
+        "industry_requirement": "BUYING_SIGNAL",
+
         "hiring_signal": "HIRING_SIGNAL",
+        "hiring_activity": "HIRING_SIGNAL",
         "hiring": "HIRING_SIGNAL",
         "job_board": "HIRING_SIGNAL",
     }
 
     def __init__(self, config: dict[str, Any]):
-        # Existing keys remain supported as procurement defaults.
-        procurement_buyer = float(config.get("min_buyer_score", 0.60))
+        procurement_buyer = float(config.get("min_buyer_score", 0.35))
         procurement_provider = float(config.get("max_provider_prob", 0.40))
 
         configured_thresholds = config.get("qualification_thresholds", {})
@@ -57,24 +71,31 @@ class QualificationGate:
                 "require_external_supplier": True,
                 "require_explicit_requirement": True,
                 "require_contradiction_pass": True,
+                "require_signal_evidence": False,
             },
             "DIRECT_PROJECT": {
                 "min_buyer_score": 0.45,
                 "max_provider_prob": 0.60,
-                # Publishing a project on a marketplace already implies
-                # willingness to use an external provider.
                 "require_external_supplier": False,
                 "require_explicit_requirement": True,
                 "require_contradiction_pass": True,
+                "require_signal_evidence": False,
             },
             "PARTNER_SEARCH": {
-                "min_buyer_score": 0.40,
+                "min_buyer_score": 0.30,
                 "max_provider_prob": 0.50,
                 "require_external_supplier": False,
-                # Partner-search language can be explicit without resembling
-                # a formal procurement specification.
                 "require_explicit_requirement": False,
                 "require_contradiction_pass": True,
+                "require_signal_evidence": True,
+            },
+            "BUYING_SIGNAL": {
+                "min_buyer_score": 0.30,
+                "max_provider_prob": 0.40,
+                "require_external_supplier": False,
+                "require_explicit_requirement": False,
+                "require_contradiction_pass": True,
+                "require_signal_evidence": True,
             },
             "HIRING_SIGNAL": {
                 "min_buyer_score": 1.0,
@@ -82,6 +103,7 @@ class QualificationGate:
                 "require_external_supplier": False,
                 "require_explicit_requirement": False,
                 "require_contradiction_pass": True,
+                "require_signal_evidence": False,
             },
         }
 
@@ -105,6 +127,7 @@ class QualificationGate:
                 "require_external_supplier",
                 "require_explicit_requirement",
                 "require_contradiction_pass",
+                "require_signal_evidence",
             ):
                 if key in values:
                     current[key] = values[key]
@@ -116,6 +139,34 @@ class QualificationGate:
 
         cleaned = str(source_type).strip().replace("-", "_").casefold()
         return cls.SOURCE_ALIASES.get(cleaned, cleaned.upper())
+
+    @classmethod
+    def _resolve_source_type(
+        cls,
+        candidate: SearchCandidate,
+        source_type: str | None,
+    ) -> str:
+        """
+        Prefer the query intent when available.
+
+        A result discovered through a regulatory-trigger or transformation
+        query should not be judged using strict formal-procurement rules merely
+        because it came from the general web.
+        """
+        intent_type = getattr(candidate, "intent_type", None)
+
+        if intent_type:
+            normalized_intent = cls._normalise_source_type(intent_type)
+            if normalized_intent in {
+                "PROCUREMENT",
+                "DIRECT_PROJECT",
+                "PARTNER_SEARCH",
+                "BUYING_SIGNAL",
+                "HIRING_SIGNAL",
+            }:
+                return normalized_intent
+
+        return cls._normalise_source_type(source_type)
 
     @staticmethod
     def _score(value: Any, default: float = 0.0) -> float:
@@ -156,16 +207,18 @@ class QualificationGate:
         contradiction_passed: bool,
         source_type: str = "PROCUREMENT",
     ) -> QualificationDecision:
-        del candidate, doc  # Reserved for future source/domain-specific rules.
+        del doc  # Reserved for future domain/content-specific rules.
 
-        source_type = self._normalise_source_type(source_type)
+        source_type = self._resolve_source_type(candidate, source_type)
 
-        # Hiring is a discovery signal, not a qualified sales opportunity.
         if source_type == "HIRING_SIGNAL":
             return self._reject(
                 source_type=source_type,
                 qual=qual,
-                reason="Hiring signals require enrichment and cannot qualify directly.",
+                reason=(
+                    "Hiring signals require enrichment and cannot qualify "
+                    "directly as sales opportunities."
+                ),
             )
 
         rules = self.thresholds.get(source_type)
@@ -184,12 +237,23 @@ class QualificationGate:
                 reason="The content is not classified as a service requirement.",
             )
 
-        if qual.organization_role != OrganizationRole.BUYER:
+        allowed_roles = {OrganizationRole.BUYER}
+        if source_type == "BUYING_SIGNAL":
+            allowed_roles.add(OrganizationRole.UNKNOWN)
+            allowed_roles.add(OrganizationRole.PUBLISHER)
+
+        if qual.organization_role not in allowed_roles:
             return self._reject(
                 source_type=source_type,
                 qual=qual,
-                reason=f"Organization role is {qual.organization_role}, not BUYER.",
+                reason=(
+                    f"Organization role {qual.organization_role} is not suitable "
+                    f"for {source_type} qualification."
+                ),
             )
+
+        buyer_score = self._score(qual.buyer_intent_score)
+        provider_probability = self._score(qual.provider_probability)
 
         if rules["require_external_supplier"] and not qual.requires_external_supplier:
             return self._reject(
@@ -205,7 +269,32 @@ class QualificationGate:
                 reason="The service requirement is not explicit enough for this source.",
             )
 
-        buyer_score = self._score(qual.buyer_intent_score)
+        # Buying-signal and partner-search pages may not explicitly say
+        # "seeking a vendor". They must nevertheless show at least one strong
+        # commercial signal so generic informational pages do not pass.
+        if rules.get("require_signal_evidence"):
+            has_signal_evidence = any(
+                (
+                    bool(qual.explicit_requirement),
+                    bool(qual.requires_external_supplier),
+                    buyer_score >= 0.30,
+                    qual.document_type in {
+                        DocumentType.IMPLEMENTATION_ANNOUNCEMENT,
+                        DocumentType.DIGITAL_TRANSFORMATION_INITIATIVE,
+                        DocumentType.MODERNIZATION_PROJECT,
+                        DocumentType.NEWS_ABOUT_REQUIREMENT,
+                    },
+                )
+            )
+            if not has_signal_evidence:
+                return self._reject(
+                    source_type=source_type,
+                    qual=qual,
+                    reason=(
+                        "No meaningful implementation, regulatory, "
+                        "transformation, partner, or project signal was detected."
+                    ),
+                )
         min_buyer_score = float(rules["min_buyer_score"])
         if buyer_score < min_buyer_score:
             return self._reject(
@@ -217,7 +306,6 @@ class QualificationGate:
                 ),
             )
 
-        provider_probability = self._score(qual.provider_probability)
         max_provider_probability = float(rules["max_provider_prob"])
         if provider_probability > max_provider_probability:
             return self._reject(

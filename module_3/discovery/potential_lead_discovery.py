@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse, urlsplit, urlunsplit
 
-
 logger = logging.getLogger(__name__)
 
 
@@ -1107,3 +1106,97 @@ Requirements:
             return None
 
         return parsed if parsed > 0 else None
+
+    # --------------------------------------------------
+    # LinkedIn Profile Analyzer (new feature)
+    # --------------------------------------------------
+    def analyze_linkedin_profile(
+        self,
+        url: str,
+        text: str | None = None,
+    ) -> dict[str, Any]:
+        """
+        Analyze a LinkedIn profile URL using LLM.
+        If text is provided, use it. Otherwise, extract username from URL
+        and search for it on LinkedIn to get a snippet.
+        """
+        # If user provided text, use it directly
+        if text and text.strip():
+            profile_text = text.strip()
+        else:
+            # Extract username from LinkedIn URL
+            username = self._extract_linkedin_username(url)
+            if not username:
+                return {
+                    "summary": "Invalid LinkedIn profile URL. Please provide a valid URL (e.g., https://www.linkedin.com/in/username/).",
+                    "message": "Could not extract username from the URL. Please check the URL and try again."
+                }
+
+            # Search for the profile using the username
+            try:
+                # Use a site-specific query to get the profile page snippet
+                query = f'site:linkedin.com/in "{username}"'
+                results = self.search_provider.search(query, num_results=1)
+                if results and len(results) > 0:
+                    item = results[0]
+                    title = item.title if hasattr(item, "title") else item.get("title", "")
+                    snippet = item.snippet if hasattr(item, "snippet") else item.get("snippet", "")
+                    # If snippet is too short, try to get more context by searching with the full URL again
+                    if len(snippet) < 50:
+                        # Fallback: search with the URL as a phrase
+                        results2 = self.search_provider.search(f'"{url}"', num_results=1)
+                        if results2:
+                            item2 = results2[0]
+                            title = item2.title if hasattr(item2, "title") else item2.get("title", "")
+                            snippet2 = item2.snippet if hasattr(item2, "snippet") else item2.get("snippet", "")
+                            if len(snippet2) > len(snippet):
+                                snippet = snippet2
+                    profile_text = f"{title}\n{snippet}" if title or snippet else ""
+                else:
+                    profile_text = ""
+            except Exception:
+                profile_text = ""
+
+            if not profile_text or len(profile_text) < 20:
+                return {
+                    "summary": "Unable to fetch profile details automatically. Please paste the profile text (from the LinkedIn 'About' section or summary) into the 'Additional Context' field.",
+                    "message": "I couldn't retrieve enough information from the LinkedIn profile. Please provide some context about this person (role, industry, achievements) so I can draft a personalised message."
+                }
+
+        # Now generate summary and message using LLM
+        prompt = f"""
+You are a professional B2B lead analyst. Given the following information about a person on LinkedIn:
+
+{profile_text}
+
+Generate:
+1. A concise professional summary (2‑3 sentences) highlighting their role, industry, and key strengths.
+2. A short, personalised LinkedIn message for Triway Technologies (cloud, cybersecurity, AI, enterprise software) to initiate a conversation.
+
+Return JSON with keys: "summary" and "message".
+"""
+        raw = self._call_llm(prompt, max_tokens=500)
+        data = self._parse_json_response(raw)
+        return {
+            "summary": data.get("summary", "No summary generated."),
+            "message": data.get("message", "No message generated."),
+        }
+
+    def _extract_linkedin_username(self, url: str) -> str | None:
+        """
+        Extract the username from a LinkedIn profile URL.
+        """
+        try:
+            parsed = urlsplit(url)
+            path = parsed.path.strip("/")
+            if not path.startswith("in/"):
+                return None
+            parts = path.split("/")
+            if len(parts) >= 2:
+                username = parts[1].strip()
+                # Remove any query or extra parts
+                username = username.split("?")[0]
+                return username if username else None
+            return None
+        except Exception:
+            return None

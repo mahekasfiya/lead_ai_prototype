@@ -14,9 +14,17 @@ class DocumentType(str, Enum):
     TENDER = "tender"
     PROCUREMENT_NOTICE = "procurement_notice"
     INVITATION_TO_BID = "invitation_to_bid"
+
     DIRECT_REQUIREMENT = "direct_requirement"
     PARTNER_REQUEST = "partner_request"
+
+    IMPLEMENTATION_ANNOUNCEMENT = "implementation_announcement"
+    DIGITAL_TRANSFORMATION_INITIATIVE = (
+        "digital_transformation_initiative"
+    )
+    MODERNIZATION_PROJECT = "modernization_project"
     NEWS_ABOUT_REQUIREMENT = "news_about_requirement"
+
     VENDOR_SERVICE_PAGE = "vendor_service_page"
     DIRECTORY = "directory"
     JOB_POSTING = "job_posting"

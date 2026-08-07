@@ -41,13 +41,18 @@ import time
 from collections import Counter
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, List
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
+from datetime import date
 
 from app.search.serpapi import search
 
 from module_3.discovery.contradiction_checker import ContradictionChecker
-from module_3.discovery.deadline_checker import DeadlineChecker
+from module_3.discovery.deadline_checker import (
+    DeadlineChecker,
+    DeadlineAssessment,
+)
 from module_3.discovery.document_fetcher import DocumentFetcher
 from module_3.discovery.llm_lead_validator import (
     LLMLeadValidator,
@@ -272,6 +277,75 @@ PARTNER_REQUIREMENT_TERMS = {
     "implementation partner required",
 }
 
+BUYING_SIGNAL_TERMS = {
+    # Regulatory and compliance signals
+    "mandatory compliance",
+    "compliance deadline",
+    "regulatory requirement",
+    "regulatory mandate",
+    "new regulation",
+    "compliance programme",
+    "must comply",
+    "required to comply",
+
+    # Implementation and rollout signals
+    "implementation programme",
+    "implementation project",
+    "planned implementation",
+    "system implementation",
+    "platform implementation",
+    "integration project",
+    "planned integration",
+    "rollout programme",
+    "technology rollout",
+    "deployment programme",
+
+    # Transformation and modernization signals
+    "digital transformation",
+    "technology transformation",
+    "modernization programme",
+    "modernisation programme",
+    "system modernization",
+    "legacy modernization",
+    "platform replacement",
+    "system replacement",
+    "infrastructure upgrade",
+    "technology upgrade",
+
+    # Commercial/project signals
+    "project scope",
+    "project requirements",
+    "programme launch",
+    "budget approved",
+    "approved budget",
+    "implementation timeline",
+    "implementation deadline",
+    "project deadline",
+    "seeking solution",
+    "solution required",
+}
+
+
+BUYING_SIGNAL_NEGATIVE_TERMS = {
+    "services we offer",
+    "our services",
+    "contact us",
+    "book a demo",
+    "request a demo",
+    "our solution",
+    "our platform",
+    "leading provider",
+    "trusted provider",
+    "case study",
+    "customer success story",
+    "market report",
+    "industry report",
+    "training course",
+    "webinar",
+    "template",
+    "guide",
+}
+
 
 def normalize_url(url: str) -> str:
     parts = urlsplit(url)
@@ -392,38 +466,134 @@ def should_skip_candidate(
     candidate: SearchCandidate,
     source_type: str,
     platform: str,
+    intent_type: str | None = None,
 ) -> tuple[bool, str | None]:
+    """
+    Apply lightweight pre-fetch filtering.
+
+    Formal procurement and partner-search results use strict URL filtering.
+    Buying-signal strategies may keep article pages because regulatory,
+    implementation, and transformation announcements are often published
+    under /article or /news paths.
+
+    This function only removes obvious noise. It does not qualify leads.
+    """
+
     title = normalize_text(candidate.source_title)
     snippet = normalize_text(candidate.source_snippet)
     combined_search_text = f"{title} {snippet}".strip()
+
     candidate_url = str(candidate.source_url)
     domain = normalized_domain(candidate_url)
 
-    # Marketplace URLs legitimately contain /jobs or related paths, so the
-    # procurement/general-web path filters must not be applied to them.
-    if source_type != "marketplace":
+    normalized_source = str(
+        source_type or ""
+    ).strip().casefold()
+
+    normalized_platform = str(
+        platform or ""
+    ).strip().casefold()
+
+    normalized_intent = str(
+        intent_type or ""
+    ).strip().casefold()
+
+    buying_signal_intents = {
+        "regulatory_trigger",
+        "implementation_announcement",
+        "digital_transformation",
+        "modernization_project",
+        "technology_requirement",
+        "industry_requirement",
+    }
+
+    hiring_intents = {
+        "hiring_activity",
+        "hiring_signal",
+    }
+
+    is_marketplace = normalized_source == "marketplace"
+    is_buying_signal = normalized_intent in buying_signal_intents
+    is_hiring_signal = normalized_intent in hiring_intents
+
+    # Marketplace URLs legitimately contain /jobs and similar paths.
+    if not is_marketplace:
         for term in BLOCKED_TITLE_TERMS:
+            # Job wording may be expected for a deliberate hiring signal.
+            if (
+                is_hiring_signal
+                and term in {
+                    "job opening",
+                    "job description",
+                    "career opportunity",
+                    "we are hiring",
+                    "hiring now",
+                }
+            ):
+                continue
+
             if term in combined_search_text:
-                return True, f"title/snippet contains blocked term '{term}'"
+                return (
+                    True,
+                    f"title/snippet contains blocked term '{term}'",
+                )
 
         for term in BLOCKED_URL_TERMS:
-            if url_contains_blocked_term(candidate_url, term):
-                return True, f"URL contains blocked path term '{term}'"
+            # Regulatory and transformation announcements are frequently
+            # published under article paths. Keep them for deeper validation.
+            if (
+                is_buying_signal
+                and term in {
+                    "/article",
+                    "/articles",
+                }
+            ):
+                continue
+
+            # Deliberate hiring strategies may legitimately return job URLs.
+            if (
+                is_hiring_signal
+                and term in {
+                    "/career",
+                    "/careers",
+                    "/job",
+                    "/jobs",
+                }
+            ):
+                continue
+
+            if url_contains_blocked_term(
+                candidate_url,
+                term,
+            ):
+                return (
+                    True,
+                    f"URL contains blocked path term '{term}'",
+                )
 
         for blocked_domain in BLOCKED_GENERAL_DOMAINS:
             if domain_matches(domain, blocked_domain):
-                return True, f"domain '{domain}' is not an approved opportunity source"
+                return (
+                    True,
+                    f"domain '{domain}' is not an approved "
+                    "opportunity source",
+                )
 
-    if platform == "freelancer":
+    if normalized_platform == "freelancer":
         if not domain_matches(domain, "freelancer.com"):
-            return True, "result does not belong to Freelancer"
+            return (
+                True,
+                "result does not belong to Freelancer",
+            )
 
-    if platform == "peopleperhour":
+    if normalized_platform == "peopleperhour":
         if not domain_matches(domain, "peopleperhour.com"):
-            return True, "result does not belong to PeoplePerHour"
+            return (
+                True,
+                "result does not belong to PeoplePerHour",
+            )
 
     return False, None
-
 
 def validate_procurement_content(
     *,
@@ -528,17 +698,96 @@ def validate_partner_content(
 
     return not reasons, reasons, matched
 
+def validate_buying_signal_content(
+    *,
+    title: str,
+    snippet: str,
+    text: str,
+) -> tuple[bool, list[str], list[str]]:
+    combined = normalize_text(
+        "\n".join([title, snippet, text])
+    )
+
+    reasons: list[str] = []
+
+    positive_matches = sorted(
+        term
+        for term in BUYING_SIGNAL_TERMS
+        if term in combined
+    )
+
+    procurement_matches = sorted(
+        term
+        for term in REAL_PROCUREMENT_TERMS
+        if term in combined
+    )
+
+    partner_matches = sorted(
+        term
+        for term in PARTNER_REQUIREMENT_TERMS
+        if term in combined
+    )
+
+    negative_matches = sorted(
+        term
+        for term in BUYING_SIGNAL_NEGATIVE_TERMS
+        if term in combined
+    )
+
+    matched_indicators = sorted(
+        set(
+            positive_matches
+            + procurement_matches
+            + partner_matches
+        )
+    )
+
+    if not matched_indicators:
+        reasons.append(
+            "No implementation, regulatory, transformation, "
+            "modernization, procurement, or partner-search "
+            "signal was found."
+        )
+
+    # Do not reject merely because one marketing phrase appears.
+    # Reject only when marketing evidence is present and there is
+    # no genuine buying signal.
+    if negative_matches and not matched_indicators:
+        reasons.append(
+            "Content appears promotional, educational, or "
+            "provider-generated rather than buyer-driven."
+        )
+
+    return (
+        not reasons,
+        reasons,
+        matched_indicators,
+    )
+
 
 def validate_by_source(
     *,
     source_type: str,
     platform: str,
+    intent_type: str | None,
     title: str,
     snippet: str,
     text: str,
     url: str,
 ) -> tuple[bool, list[str], list[str]]:
-    if source_type == "marketplace":
+    normalized_source = (
+        str(source_type or "")
+        .strip()
+        .casefold()
+    )
+
+    normalized_intent = (
+        str(intent_type or "")
+        .strip()
+        .casefold()
+    )
+
+    if normalized_source == "marketplace":
         return validate_marketplace_content(
             platform=platform,
             url=url,
@@ -547,8 +796,54 @@ def validate_by_source(
             text=text,
         )
 
-    if source_type == "general_web":
+    if normalized_intent in {
+        "formal_procurement",
+        "official_procurement",
+        "procurement",
+    }:
+        return validate_procurement_content(
+            title=title,
+            snippet=snippet,
+            text=text,
+        )
+
+    if normalized_intent in {
+        "partner_request",
+        "partner_search",
+    }:
         return validate_partner_content(
+            title=title,
+            snippet=snippet,
+            text=text,
+        )
+
+    if normalized_intent in {
+        "regulatory_trigger",
+        "implementation_announcement",
+        "digital_transformation",
+        "modernization_project",
+        "technology_requirement",
+        "industry_requirement",
+    }:
+        return validate_buying_signal_content(
+            title=title,
+            snippet=snippet,
+            text=text,
+        )
+
+    if normalized_intent in {
+        "hiring_activity",
+        "hiring_signal",
+    }:
+        return validate_buying_signal_content(
+            title=title,
+            snippet=snippet,
+            text=text,
+        )
+
+    # Legacy fallback behavior.
+    if normalized_source == "general_web":
+        return validate_buying_signal_content(
             title=title,
             snippet=snippet,
             text=text,
@@ -590,13 +885,69 @@ class LeadDiscoveryService:
             max_chunks=config.get("max_chunks", 3),
         )
 
-        # The LLM is used only as the final verifier for locally shortlisted
-        # opportunities. Query generation and initial requirement classification
-        # remain deterministic at this stage.
+        self.config = config
+
+        # Load the canonical service-region names before creating the LLM
+        # validator. Claude receives these exact names and must copy one of
+        # them when it marks a buyer region as supported.
+        self.knowledge_base_path = config.get("knowledge_base_path")
+        if self.knowledge_base_path:
+            self.knowledge_base_path = Path(self.knowledge_base_path)
+
+        self.allowed_regions: list[str] = []
+        self.region_names: set[str] = set()
+
+        if self.knowledge_base_path and self.knowledge_base_path.exists():
+            try:
+                with open(
+                    self.knowledge_base_path,
+                    "r",
+                    encoding="utf-8",
+                ) as file_handle:
+                    data = json.load(file_handle)
+
+                regions = data.get("service_regions", [])
+
+                self.allowed_regions = sorted(
+                    {
+                        str(region.get("region") or "").strip()
+                        for region in regions
+                        if str(region.get("region") or "").strip()
+                    }
+                )
+
+                self.region_names = {
+                    region.casefold()
+                    for region in self.allowed_regions
+                }
+
+                logger.info(
+                    "Loaded %s allowed regions from knowledge base.",
+                    len(self.allowed_regions),
+                )
+
+            except Exception as exc:
+                logger.warning(
+                    "Could not load region names from knowledge base: %s",
+                    exc,
+                )
+                self.allowed_regions = []
+                self.region_names = set()
+        else:
+            logger.warning(
+                "Knowledge base path not provided or missing; "
+                "LLM region validation will use unknown status."
+            )
+
+        # The LLM is used as the final verifier for locally shortlisted
+        # opportunities. It also identifies the buyer country and maps it
+        # against the canonical region list loaded above.
         self.llm_validator = None
+
         if use_llm and llm_model is not None:
             self.llm_validator = LLMLeadValidator(
                 model=llm_model,
+                allowed_regions=self.allowed_regions,
                 batch_size=config.get("llm_batch_size", 8),
                 max_candidates=config.get("llm_max_candidates", 20),
                 max_excerpt_chars=config.get(
@@ -604,17 +955,20 @@ class LeadDiscoveryService:
                     3000,
                 ),
             )
+
             logger.info(
                 "LLM lead validator enabled. Batch size: %s | "
-                "Max candidates: %s",
+                "Max candidates: %s | Allowed regions: %s",
                 config.get("llm_batch_size", 8),
                 config.get("llm_max_candidates", 20),
+                len(self.allowed_regions),
             )
         else:
             logger.info(
                 "LLM lead validator disabled. "
                 "Locally validated leads will be returned."
             )
+
         self.fetcher = DocumentFetcher(
             timeout=config.get("fetch_timeout", 20),
             max_size=config.get("fetch_max_size", 10 * 1024 * 1024),
@@ -632,43 +986,121 @@ class LeadDiscoveryService:
             }
         )
 
-        self.config = config
+        # Concurrency settings
+        self.query_workers = config.get("query_workers", 5)
+        self.fetch_workers = config.get("fetch_workers", 10)
 
-        # --- from your branch: region filter, loaded from the knowledge base ---
-        self.knowledge_base_path = config.get("knowledge_base_path")
-        if self.knowledge_base_path:
-            self.knowledge_base_path = Path(self.knowledge_base_path)
+    def _should_recheck_deadline_with_llm(
+            self,
+            deadline_assessment,
+    ) -> bool:
+        """
+        Decide whether the rule-based deadline result needs LLM extraction.
+        Claude is used only for ambiguous or potentially unsafe cases.
+        """
+        if self.llm_model is None:
+            return False
+        if deadline_assessment.status == "unknown":
+            return True
+        if deadline_assessment.deadline is None:
+            return True
+        matched_text = (
+            deadline_assessment.matched_text or ""
+        ).casefold()
+        ambiguous_labels = {
+            "proposal opening",
+            "bid opening",
+            "question deadline",
+            "clarification deadline",
+            "pre-bid meeting",
+            "award date",
+            "contract start",
+        }
+        return any(
+            label in matched_text
+            for label in ambiguous_labels
+        )
 
-        self.region_names = set()
+    def _extract_deadline_with_llm(
+            self,
+            *,
+            title: str,
+            snippet: str,
+            text: str,
+    ) -> dict[str, Any] | None:
+        """
+        Ask the LLM to extract the final submission deadline only.
+        The LLM extracts evidence; application code decides active/expired.
+        """
+        if self.llm_model is None:
+            return None
+        excerpt = build_llm_excerpt(
+            "\n\n".join(
+                part
+                for part in [title, snippet, text]
+                if part
+            ),
+            max_chars=5000,
+        )
+        prompt = f"""
+        You are extracting a procurement deadline from a document.
+        Identify only the final deadline for submitting the bid, proposal,
+        quotation, tender response, application, or RFI response.
+        Do not select:
+        - publication date
+        - issue date
+        - clarification deadline
+        - question deadline
+        - pre-bid meeting date
+        - proposal opening date
+        - bid opening date
+        - award date
+        - contract start date
+        - implementation date
+        If no final submission deadline is clearly supported, return null.
+        Return valid JSON only:
+        {{
+            "deadline": "YYYY-MM-DD or null",
+            "evidence": "exact supporting text or null",
+            "confidence": 0.0,
+            "reason": "brief explanation"
+        }}
+        Document:
+        {excerpt}
+""".strip()
+        try:
+            response = self.llm_model.generate_content(
+                prompt,
+                max_tokens=800,
+            )
+            raw = getattr(response, "text", None)
+            if not isinstance(raw, str) or not raw.strip():
+                return None
 
-        if self.knowledge_base_path and self.knowledge_base_path.exists():
-            try:
-                with open(self.knowledge_base_path, "r", encoding="utf-8") as f:
-                    data = json.load(f)
-                    regions = data.get("service_regions", [])
-                    self.region_names = {
-                        r.get("region", "").strip().lower()
-                        for r in regions
-                        if r.get("region")
-                    }
-                logger.info(
-                    "Loaded %s region names from knowledge base.",
-                    len(self.region_names),
-                )
-            except Exception as e:
-                logger.warning(
-                    "Could not load region names from knowledge base: %s", e
-                )
-                self.region_names = set()
-        else:
-            logger.warning(
-                "Knowledge base path not provided or missing; region filter disabled."
+            cleaned = raw.strip()
+
+            fenced_match = re.search(
+                r"```(?:json)?\s*(.*?)\s*```",
+                cleaned,
+                flags=re.DOTALL | re.IGNORECASE,
             )
 
-        # Concurrency settings
-        self.query_workers = config.get("query_workers", 5)   # parallel SerpAPI calls
-        self.fetch_workers = config.get("fetch_workers", 10)  # parallel document fetches
+            if fenced_match:
+                cleaned = fenced_match.group(1).strip()
 
+            data = json.loads(cleaned)
+
+            if not isinstance(data, dict):
+                return None
+
+            return data
+
+        except Exception:
+            logger.exception(
+                "Claude deadline extraction failed."
+            )
+            return None
+    
     def discover(
         self,
         request: DiscoverLeadsRequest,
@@ -778,6 +1210,7 @@ class LeadDiscoveryService:
                         candidate,
                         source_type=context["source_type"],
                         platform=context["platform"],
+                        intent_type=context.get("intent_type"),
                     )
 
                     if skip_candidate:
@@ -823,6 +1256,7 @@ class LeadDiscoveryService:
         def fetch_and_process(candidate: SearchCandidate) -> None:
             nonlocal successful_fetches, failed_fetches, empty_content_count
             nonlocal validation_rejections, expired_rejections, gate_rejections
+            nonlocal listing_page_rejections
 
             context = candidate_context.get(
                 normalize_url(str(candidate.source_url)),
@@ -861,6 +1295,7 @@ class LeadDiscoveryService:
             valid, rejection_reasons, matched_terms = validate_by_source(
                 source_type=context["source_type"],
                 platform=context["platform"],
+                intent_type=context.get("intent_type"),
                 title=candidate.source_title or "",
                 snippet=candidate.source_snippet or "",
                 text=doc.text or "",
@@ -934,6 +1369,61 @@ class LeadDiscoveryService:
                 deadline_assessment.reason,
             )
 
+            if self._should_recheck_deadline_with_llm(
+                deadline_assessment
+            ):
+                llm_deadline = self._extract_deadline_with_llm(
+                    title=candidate.source_title or "",
+                    snippet=candidate.source_snippet or "",
+                    text=doc.text or "",
+                )
+                if llm_deadline:
+                    deadline_value = llm_deadline.get("deadline")
+                    if deadline_value:
+                        try:
+                            extracted_date = date.fromisoformat(
+                                deadline_value
+                            )
+                            status_value = (
+                                "expired"
+                                if extracted_date < date.today()
+                                else "active"
+                            )
+                            deadline_assessment = DeadlineAssessment(
+                                status=status_value,
+                                deadline=extracted_date,
+                                matched_text=llm_deadline.get(
+                                    "evidence"
+                                ),
+                                reason=llm_deadline.get(
+                                    "reason"
+                                )
+                                or (
+                                    "Deadline extracted by Claude and "
+                                    "classified deterministically."
+                                ),
+                                confidence=float(
+                                    llm_deadline.get(
+                                        "confidence",
+                                        0.0,
+                                    )
+                                ),
+                            )
+                            logger.info(
+                                "Claude deadline extraction | URL: %s | "
+                                "Status: %s | Deadline: %s | Confidence: %.2f",
+                                candidate.source_url,
+                                deadline_assessment.status,
+                                extracted_date.isoformat(),
+                                deadline_assessment.confidence,
+                            )
+                        except ValueError:
+                            logger.warning(
+                                "Claude returned an invalid deadline format "
+                                "for %s: %s",
+                                candidate.source_url,
+                                deadline_value,
+                            )
             if deadline_assessment.is_expired:
                 with counter_lock:
                     expired_rejections += 1
@@ -1090,9 +1580,16 @@ class LeadDiscoveryService:
             }
             # Wait for all to complete
             for future in as_completed(fetch_futures):
-                # Future results are None; we just wait for completion.
-                # Exceptions in fetch_and_process will be logged inside.
-                pass
+                candidate = fetch_futures[future]
+
+                try:
+                    future.result()
+                except Exception:
+                    logger.exception(
+                        "Unexpected document-processing failure "
+                        "for candidate: %s",
+                        candidate.source_url,
+                    )
 
         # qualified_candidates is now fully populated.
         logger.info(
@@ -1220,27 +1717,62 @@ class LeadDiscoveryService:
                 )
             )
 
+            fallback_service_match: dict[str, Any] | None = None
+
             if not analysis_response.matched_services:
-                logger.info(
-                    "🟠 MANUAL REVIEW — SIMILARITY: %s | Candidate passed "
-                    "qualification but no service exceeded %.2f.",
-                    candidate.source_url,
-                    request.minimum_similarity,
-                )
-                similarity_manual_review.append(
-                    ManualReviewLead(
-                        source_title=candidate.source_title or "",
-                        source_url=str(candidate.source_url),
-                        source_snippet=candidate.source_snippet,
-                        search_query=candidate.search_query,
-                        reason=(
-                            "Candidate passed qualification but no service "
-                            "exceeded the similarity threshold."
-                        ),
-                        review_type="similarity",
+                originating_service_id = str(
+                    candidate.service_id or ""
+                ).strip()
+
+                originating_service_name = str(
+                    candidate.service_name
+                    or context.get("service_name")
+                    or ""
+                ).strip()
+
+                if not originating_service_id:
+                    logger.warning(
+                        "🟠 MANUAL REVIEW — NO SERVICE CONTEXT: %s | "
+                        "Embedding similarity found no match and the "
+                        "originating query did not contain a service ID.",
+                        candidate.source_url,
                     )
+
+                    similarity_manual_review.append(
+                        ManualReviewLead(
+                            source_title=candidate.source_title or "",
+                            source_url=str(candidate.source_url),
+                            source_snippet=candidate.source_snippet,
+                            search_query=candidate.search_query,
+                            reason=(
+                                "No service exceeded the similarity threshold "
+                                "and no originating service context was available."
+                            ),
+                            country=lead.country,
+                            review_type="similarity",
+                        )
+                    )
+                    continue
+
+                fallback_service_match = {
+                    "service_id": originating_service_id,
+                    "service_name": (
+                        originating_service_name
+                        or originating_service_id
+                    ),
+                    "similarity_percentage": 0.0,
+                    "service_match_percentage": 0.0,
+                    "match_source": "originating_search_query",
+                    "similarity_status": "below_threshold",
+                }
+
+                logger.info(
+                    "Low-similarity candidate retained for LLM validation: "
+                    "%s | Originating service: %s (%s)",
+                    candidate.source_url,
+                    fallback_service_match["service_name"],
+                    fallback_service_match["service_id"],
                 )
-                continue
 
             local_shortlist.append(
                 {
@@ -1250,16 +1782,15 @@ class LeadDiscoveryService:
                     "context": context,
                     "lead": lead,
                     "analysis": analysis_response,
-                    # Needed by LeadIntelligenceService.build_report(), which
-                    # now requires a DeadlineAssessment.
                     "deadline": item["deadline"],
+                    "fallback_service_match": fallback_service_match,
                 }
             )
 
         logger.info(
             "Local analysis complete. Analysed: %s | "
-            "Shortlisted for LLM validation: %s | "
-            "Similarity manual review: %s",
+            "Sent to LLM validation: %s | "
+            "Unroutable similarity reviews: %s",
             len(qualified_candidates),
             len(local_shortlist),
             len(similarity_manual_review),
@@ -1300,7 +1831,13 @@ class LeadDiscoveryService:
                         }
 
                     matched_services.append(match_payload)
-
+                if (
+                    not matched_services
+                    and item.get("fallback_service_match")
+                ):
+                    matched_services.append(
+                        item["fallback_service_match"]
+                    )
                 document_type = getattr(
                     qualification.document_type,
                     "value",
@@ -1332,6 +1869,21 @@ class LeadDiscoveryService:
                         uncertainty_reasons=list(
                             qualification.rejection_reasons or []
                         ),
+                        deadline_status=item["context"].get(
+                            "deadline_status",
+                            "unknown",
+                        ),
+                        deadline=item["context"].get("deadline"),
+                        deadline_reason=item["context"].get(
+                            "deadline_reason",
+                            "",
+                        ),
+                        deadline_confidence=float(
+                            item["context"].get(
+                                "deadline_confidence",
+                                0.0,
+                            )
+                        ),
                     )
                 )
 
@@ -1358,16 +1910,26 @@ class LeadDiscoveryService:
             lead = item["lead"]
             analysis_response = item["analysis"]
 
-            top_match = analysis_response.matched_services[0]
+            if analysis_response.matched_services:
+                top_match = analysis_response.matched_services[0]
+            else:
+                fallback = item.get("fallback_service_match")
+
+                if not fallback:
+                    logger.warning(
+                        "No matched or fallback service available for %s",
+                        candidate.source_url,
+                    )
+                    continue
+
+                top_match = SimpleNamespace(
+                    service_id=fallback["service_id"],
+                    service_name=fallback["service_name"],
+                    similarity_percentage=0.0,
+                    service_match_percentage=0.0,
+                )
 
             llm_result = llm_result_map.get(str(index))
-
-            if llm_result and getattr(llm_result, "country", None):
-                lead.country = llm_result.country
-                logger.info(
-                    "Updated lead country from LLM validation: %s",
-                    lead.country,
-                )
 
             if self.llm_validator is None:
                 decision = LeadValidationDecision.VALID_LEAD
@@ -1382,6 +1944,63 @@ class LeadDiscoveryService:
             else:
                 decision = llm_result.decision
                 validation_reason = llm_result.reason
+
+            # Enforce region eligibility before ordinary decision routing.
+            # Claude extracts the buyer country and region_status; Python
+            # applies the hard business policy.
+            if llm_result is not None:
+                enforced_region_status = getattr(
+                    llm_result,
+                    "region_status",
+                    "unknown",
+                )
+                enforced_country = (
+                    getattr(
+                        llm_result,
+                        "canonical_country",
+                        None,
+                    )
+                    or getattr(
+                        llm_result,
+                        "buyer_country_raw",
+                        None,
+                    )
+                )
+
+                if enforced_region_status == "unsupported":
+                    decision = LeadValidationDecision.NOT_A_LEAD
+                    validation_reason = (
+                        "Buyer is outside the allowed service regions"
+                        + (
+                            f": {enforced_country}."
+                            if enforced_country
+                            else "."
+                        )
+                    )
+
+                elif (
+                    enforced_region_status == "unknown"
+                    and decision == LeadValidationDecision.VALID_LEAD
+                ):
+                    decision = LeadValidationDecision.MANUAL_REVIEW
+                    validation_reason = (
+                        "Buyer country could not be established reliably."
+                    )
+
+                elif (
+                    enforced_region_status == "supported"
+                    and not getattr(
+                        llm_result,
+                        "canonical_country",
+                        None,
+                    )
+                    and decision == LeadValidationDecision.VALID_LEAD
+                ):
+                    decision = LeadValidationDecision.MANUAL_REVIEW
+                    validation_reason = (
+                        "Claude marked the region as supported but did not "
+                        "return a canonical allowed-region value."
+                    )
 
             if decision == LeadValidationDecision.NOT_A_LEAD:
                 llm_rejected_count += 1
@@ -1417,6 +2036,294 @@ class LeadDiscoveryService:
                 )
                 continue
 
+            # A valid lead must still have at least one service confirmed by
+            # Claude. This is especially important for candidates that reached
+            # Claude through originating-query fallback rather than embeddings.
+            if (
+                llm_result is not None
+                and decision == LeadValidationDecision.VALID_LEAD
+                and not llm_result.matched_service_ids
+            ):
+                llm_manual_review_count += 1
+
+                logger.warning(
+                    "LLM returned valid_lead without confirming "
+                    "a Triway service: %s",
+                    candidate.source_url,
+                )
+
+                manual_review.append(
+                    ManualReviewLead(
+                        source_title=candidate.source_title or "",
+                        source_url=str(candidate.source_url),
+                        source_snippet=candidate.source_snippet,
+                        search_query=candidate.search_query,
+                        company_name=analysis_response.company_name,
+                        industry=analysis_response.industry,
+                        country=lead.country,
+                        suggested_service_id=top_match.service_id,
+                        suggested_service_name=top_match.service_name,
+                        suggested_similarity=(
+                            top_match.service_match_percentage
+                        ),
+                        review_type="llm",
+                        reason=(
+                            "Claude considered the candidate potentially valid "
+                            "but did not confirm a matching Triway service."
+                        ),
+                    )
+                )
+                continue
+
+            fallback_service = item.get("fallback_service_match")
+
+            if (
+                fallback_service
+                and llm_result is not None
+                and decision == LeadValidationDecision.VALID_LEAD
+            ):
+                confirmed_service_ids = set(
+                    llm_result.matched_service_ids
+                )
+                originating_service_id = (
+                    fallback_service["service_id"]
+                )
+
+                if originating_service_id not in confirmed_service_ids:
+                    logger.info(
+                        "LLM did not confirm originating service %s "
+                        "for %s. Confirmed services: %s",
+                        originating_service_id,
+                        candidate.source_url,
+                        sorted(confirmed_service_ids),
+                    )
+
+            # Claude makes the semantic buyer-region decision. Python only
+            # routes that structured decision and verifies that a supposedly
+            # supported country was copied from the supplied canonical list.
+            if self.llm_validator is not None:
+                region_status = (
+                    getattr(
+                        llm_result,
+                        "region_status",
+                        "unknown",
+                    )
+                    if llm_result is not None
+                    else "unknown"
+                )
+
+                canonical_country = (
+                    getattr(
+                        llm_result,
+                        "canonical_country",
+                        None,
+                    )
+                    if llm_result is not None
+                    else None
+                )
+
+                buyer_country_raw = (
+                    getattr(
+                        llm_result,
+                        "buyer_country_raw",
+                        None,
+                    )
+                    if llm_result is not None
+                    else None
+                )
+
+                region_evidence = (
+                    getattr(
+                        llm_result,
+                        "region_evidence",
+                        None,
+                    )
+                    if llm_result is not None
+                    else None
+                )
+
+                if region_status == "unsupported":
+                    llm_rejected_count += 1
+
+                    logger.info(
+                        "❌ REGION REJECTED: %s | Buyer country: %s | "
+                        "Evidence: %s",
+                        candidate.source_url,
+                        buyer_country_raw
+                        or canonical_country
+                        or "unknown",
+                        region_evidence or "none",
+                    )
+                    continue
+
+                if region_status == "unknown":
+                    llm_manual_review_count += 1
+
+                    logger.info(
+                        "🟠 REGION UNKNOWN — MANUAL REVIEW: %s",
+                        candidate.source_url,
+                    )
+
+                    manual_review.append(
+                        ManualReviewLead(
+                            source_title=(
+                                candidate.source_title or ""
+                            ),
+                            source_url=str(
+                                candidate.source_url
+                            ),
+                            source_snippet=(
+                                candidate.source_snippet
+                            ),
+                            search_query=(
+                                candidate.search_query
+                            ),
+                            company_name=(
+                                analysis_response.company_name
+                            ),
+                            industry=(
+                                analysis_response.industry
+                            ),
+                            country=buyer_country_raw,
+                            suggested_service_id=(
+                                top_match.service_id
+                            ),
+                            suggested_service_name=(
+                                top_match.service_name
+                            ),
+                            suggested_similarity=(
+                                top_match.service_match_percentage
+                            ),
+                            review_type="llm",
+                            reason=(
+                                "Claude could not reliably establish "
+                                "the buyer organization's country."
+                                + (
+                                    f" Evidence: {region_evidence}"
+                                    if region_evidence
+                                    else ""
+                                )
+                            ),
+                        )
+                    )
+                    continue
+
+                if region_status == "supported":
+                    canonical_key = (
+                        canonical_country.casefold()
+                        if canonical_country
+                        else None
+                    )
+
+                    if (
+                        not canonical_key
+                        or canonical_key not in self.region_names
+                    ):
+                        llm_manual_review_count += 1
+
+                        logger.warning(
+                            "Claude marked the region as supported but "
+                            "returned an invalid canonical country: %s",
+                            canonical_country,
+                        )
+
+                        manual_review.append(
+                            ManualReviewLead(
+                                source_title=(
+                                    candidate.source_title or ""
+                                ),
+                                source_url=str(
+                                    candidate.source_url
+                                ),
+                                source_snippet=(
+                                    candidate.source_snippet
+                                ),
+                                search_query=(
+                                    candidate.search_query
+                                ),
+                                company_name=(
+                                    analysis_response.company_name
+                                ),
+                                industry=(
+                                    analysis_response.industry
+                                ),
+                                country=canonical_country,
+                                suggested_service_id=(
+                                    top_match.service_id
+                                ),
+                                suggested_service_name=(
+                                    top_match.service_name
+                                ),
+                                suggested_similarity=(
+                                    top_match.service_match_percentage
+                                ),
+                                review_type="llm",
+                                reason=(
+                                    "Claude marked the buyer region as "
+                                    "supported but did not return a valid "
+                                    "canonical country from the supplied "
+                                    "allowed-region list."
+                                ),
+                            )
+                        )
+                        continue
+
+                    lead.country = canonical_country
+
+                    logger.info(
+                        "Buyer region validated by LLM: %s",
+                        lead.country,
+                    )
+
+                else:
+                    # Defensive fallback for an unexpected region_status.
+                    llm_manual_review_count += 1
+
+                    logger.warning(
+                        "Unexpected LLM region status for %s: %s",
+                        candidate.source_url,
+                        region_status,
+                    )
+
+                    manual_review.append(
+                        ManualReviewLead(
+                            source_title=(
+                                candidate.source_title or ""
+                            ),
+                            source_url=str(
+                                candidate.source_url
+                            ),
+                            source_snippet=(
+                                candidate.source_snippet
+                            ),
+                            search_query=(
+                                candidate.search_query
+                            ),
+                            company_name=(
+                                analysis_response.company_name
+                            ),
+                            industry=(
+                                analysis_response.industry
+                            ),
+                            country=buyer_country_raw,
+                            suggested_service_id=(
+                                top_match.service_id
+                            ),
+                            suggested_service_name=(
+                                top_match.service_name
+                            ),
+                            suggested_similarity=(
+                                top_match.service_match_percentage
+                            ),
+                            review_type="llm",
+                            reason=(
+                                "The LLM returned an unsupported "
+                                "region-status value."
+                            ),
+                        )
+                    )
+                    continue
+
             logger.info(
                 "✅ LLM VALIDATED: %s | Reason: %s",
                 candidate.source_url,
@@ -1430,6 +2337,12 @@ class LeadDiscoveryService:
                 deadline=item["deadline"],
             )
 
+            # DiscoveredLeadResponse.matched_services expects the full
+            # ServiceMatchResponse schema produced by the embedding service.
+            # The originating-service fallback is only provisional context
+            # for Claude and must not be returned as a partial service match.
+            response_matched_services = analysis_response.matched_services
+
             discovered_leads.append(
                 DiscoveredLeadResponse(
                     source_title=candidate.source_title or "",
@@ -1439,7 +2352,7 @@ class LeadDiscoveryService:
                     company_name=analysis_response.company_name,
                     industry=analysis_response.industry,
                     country=lead.country,
-                    matched_services=analysis_response.matched_services,
+                    matched_services=response_matched_services,
                     top_service_id=top_match.service_id,
                     top_service_name=top_match.service_name,
                     top_service_match_percentage=(
@@ -1464,34 +2377,6 @@ class LeadDiscoveryService:
             reverse=True,
         )
         discovered_leads = discovered_leads[: request.max_leads]
-
-        # --- Region filter (from your branch) ---
-        if self.region_names:
-            original_leads_count = len(discovered_leads)
-            discovered_leads = [
-                lead for lead in discovered_leads
-                if lead.country and lead.country.strip().lower() in self.region_names
-            ]
-            filtered_leads = original_leads_count - len(discovered_leads)
-            if filtered_leads:
-                logger.info(
-                    "Region filter removed %s leads (country not in service_regions).",
-                    filtered_leads,
-                )
-
-            original_manual_count = len(manual_review)
-            manual_review = [
-                item for item in manual_review
-                if item.country and item.country.strip().lower() in self.region_names
-            ]
-            filtered_manual = original_manual_count - len(manual_review)
-            if filtered_manual:
-                logger.info(
-                    "Region filter removed %s manual-review items.",
-                    filtered_manual,
-                )
-        else:
-            logger.info("No region filter applied (region_names empty).")
 
         return DiscoverLeadsResponse(
             queries_executed=[record["query"] for record in query_records],

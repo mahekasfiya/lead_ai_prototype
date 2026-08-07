@@ -92,6 +92,11 @@ class LeadValidationResult:
     # --- from your branch: country extraction, used by discover()'s
     # country-override logic ---
     country: str | None = None
+    buyer_country_raw: str | None = None
+    canonical_country: str | None = None
+    region_status: str = "unknown"
+    region_confidence: float = 0.0
+    region_evidence: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
@@ -126,7 +131,19 @@ class LLMLeadValidator:
     The response must either be a string or expose a ``text`` attribute.
     """
 
-    SYSTEM_INSTRUCTIONS = """
+    SYSTEM_INSTRUCTIONS_TEMPLATE = """
+The objective is to determine whether the BUYER ORGANIZATION represents a genuine sales opportunity.
+
+Ignore information describing:
+
+- the publisher;
+- the website owner;
+- the tender portal;
+- the search engine result;
+- intermediary procurement websites.
+
+Evaluate only the underlying buyer opportunity.
+
 You are validating enterprise technology sales leads for Triway.
 
 Evaluate each candidate independently using only the supplied evidence.
@@ -155,51 +172,106 @@ Important rules:
 - The local similarity score is supporting evidence only. A low similarity
   score must not automatically cause rejection when the requirement clearly
   matches a supplied Triway service.
+- Only include matched_service_ids directly supported by the supplied evidence.
+  Return an empty list when no supplied Triway service can be justified.
 - Determine whether the evidence describes one specific opportunity. A search
   page, category page, tender directory, multi-opportunity listing, or generic
   tender landing page is not a valid lead.
 - Use the supplied deadline analysis as the primary evidence for temporal status.
 
-  * If deadline_status is "expired", return not_a_lead.
+  * If deadline_status is "expired", return not_a_lead. Never override it.
   * If deadline_status is "open", you may consider the opportunity current.
   * If deadline_status is "upcoming", treat it as a valid future opportunity.
   * If deadline_status is "unknown", inspect only the supplied document evidence.
 
   Never infer that an opportunity is current solely because of:
-  - the URL
-  - the PDF filename
-  - upload/publication dates
-  - directory names
-  - page timestamps
+  - the URL;
+  - the PDF filename;
+  - upload or publication dates;
+  - directory names;
+  - page timestamps.
 
-  Only explicit submission deadlines, closing dates,
-  procurement schedules or clear statements that the
-  opportunity is accepting responses may be used as
-  evidence that it is current.
+  Only explicit submission deadlines, closing dates, procurement schedules,
+  or clear statements that the opportunity is accepting responses may be used
+  as evidence that it is current.
 
-  If currentness cannot be verified,
-  return manual_review rather than valid_lead.
+  If currentness cannot be verified, return manual_review rather than valid_lead.
 - A technical job vacancy by itself is normally not enough.
 - A procurement article or newsletter mentioning procurement is not itself
   a procurement lead.
 - A vendor announcing its own product or service is not a buyer lead.
 - A contract award is not an open lead.
+- Set supplier_already_selected to true only when the evidence explicitly says
+  that the contract has been awarded or a supplier has already been selected.
 - Pre-solicitation intelligence may be a valid lead when a buyer, initiative,
-  budget or active planning signal is clearly identified.
+  budget, or active planning signal is clearly identified.
 - Never invent company names, dates, contacts, procurement status, services,
   supplier selection, or buying intent.
-- Keep the reason concise and evidence-based.
+- Keep reason under 40 words and evidence-based.
+- Confidence reflects evidence quality, not opportunity importance.
 
-Country extraction:
-From the content of the lead, determine which region or country the lead has
-come from. Give the full name of the country/region, e.g. "United States" or
-"United Arab Emirates" (not "US" or "UAE"). If the country cannot be
-determined from the evidence, return null.
+When buyer organization, region, and procurement status conflict across inputs,
+prioritize the fetched procurement document content over the search snippet,
+page title, URL, or website metadata.
+
+REGION IDENTIFICATION
+
+Determine only the country of the buyer organization or contracting authority.
+
+Do not use:
+
+- supplier locations;
+- website hosting location;
+- contact addresses unless they clearly belong to the buyer;
+- a contact person's nationality;
+- the location of a third-party tender aggregator;
+- example locations;
+- delivery locations unless they clearly identify the buyer country.
+
+Allowed service regions:
+
+{allowed_regions_text}
+
+Return:
+
+buyer_country_raw
+The location exactly as written in the supplied evidence, or null.
+
+canonical_country
+Exactly one value copied from the allowed-region list when the buyer country is
+supported. Otherwise return null.
+
+region_status
+One of: supported, unsupported, unknown.
+
+region_confidence
+A number from 0 to 1 representing evidence quality.
+
+region_evidence
+Exact supporting evidence from the supplied source, or null.
+
+Region rules:
+- Region eligibility is a hard business rule.
+- Use supported only when the buyer country is clearly established and appears
+  in the allowed-region list.
+- Use unsupported only when the buyer country is clearly established and falls
+  outside the allowed-region list.
+- Use unknown when the buyer country cannot be reliably established.
+- If region_status is unsupported, decision MUST be not_a_lead.
+  Never return manual_review or valid_lead for an unsupported buyer country.
+- If region_status is unknown, decision MUST NOT be valid_lead.
+  Use manual_review unless another clear rejection reason already makes the
+  candidate not_a_lead.
+- A candidate may be valid_lead only when region_status is supported.
+- When supported, copy canonical_country exactly from the allowed-region list.
+- Never abbreviate canonical_country.
+- Never invent a new canonical country value.
+- Never guess.
 
 Return JSON only using this exact top-level structure:
-{
+{{
   "results": [
-    {
+    {{
       "candidate_id": "string",
       "decision": "valid_lead | not_a_lead | manual_review",
       "buyer_organization": "string or null",
@@ -210,10 +282,20 @@ Return JSON only using this exact top-level structure:
       "is_current": true,
       "confidence": 0.0,
       "reason": "string",
-      "country": "string or null"
-    }
+      "buyer_country_raw": "string or null",
+      "canonical_country": "string or null",
+      "region_status": "supported | unsupported | unknown",
+      "region_confidence": 0.0,
+      "region_evidence": "string or null"
+    }}
   ]
-}
+}}
+
+Do not include explanations outside the JSON.
+Do not include Markdown or code fences.
+Every candidate must produce exactly one result.
+Every field in the schema is required.
+Use null for unknown string values and [] for no matched services.
 """.strip()
 
     def __init__(
@@ -226,6 +308,7 @@ Return JSON only using this exact top-level structure:
         max_retries: int = 3,
         retry_base_seconds: float = 2.0,
         raise_on_batch_failure: bool = False,
+        allowed_regions: list[str] | None = None,
     ) -> None:
         if model is None:
             raise ValueError("An LLM model or model adapter is required.")
@@ -254,6 +337,13 @@ Return JSON only using this exact top-level structure:
         self.max_retries = max_retries
         self.retry_base_seconds = retry_base_seconds
         self.raise_on_batch_failure = raise_on_batch_failure
+        self.allowed_regions = sorted(
+            {
+                str(region).strip()
+                for region in (allowed_regions or [])
+                if str(region).strip()
+            }
+        )
 
     def validate_candidates(
         self,
@@ -487,8 +577,17 @@ Return JSON only using this exact top-level structure:
             separators=(",", ":"),
         )
 
+        allowed_regions_text = "\n".join(
+            f"- {region}"
+            for region in self.allowed_regions
+        ) or "- None configured"
+
+        system_instructions = self.SYSTEM_INSTRUCTIONS_TEMPLATE.format(
+            allowed_regions_text=allowed_regions_text,
+        )
+
         return (
-            f"{self.SYSTEM_INSTRUCTIONS}\n\n"
+            f"{system_instructions}\n\n"
             "Candidates to validate:\n"
             f"{candidate_json}"
         )
@@ -628,6 +727,32 @@ Return JSON only using this exact top-level structure:
         if not reason:
             reason = "No validation reason was returned."
 
+        buyer_country_raw = cls._optional_string(
+            item.get("buyer_country_raw")
+        )
+        canonical_country = cls._optional_string(
+            item.get("canonical_country")
+        )
+
+        region_status = str(
+            item.get("region_status", "unknown")
+        ).strip().lower()
+
+        if region_status not in {
+            "supported",
+            "unsupported",
+            "unknown",
+        }:
+            region_status = "unknown"
+
+        region_confidence = cls._safe_float(
+            item.get("region_confidence", 0.0)
+        )
+        region_confidence = max(
+            0.0,
+            min(1.0, region_confidence),
+        )
+
         result = LeadValidationResult(
             candidate_id=candidate_id,
             decision=decision,
@@ -645,7 +770,16 @@ Return JSON only using this exact top-level structure:
             ),
             confidence=confidence,
             reason=reason,
-            country=cls._optional_string(item.get("country")),
+            # Keep the legacy country field populated so existing downstream
+            # country-override logic continues to work without modification.
+            country=canonical_country,
+            buyer_country_raw=buyer_country_raw,
+            canonical_country=canonical_country,
+            region_status=region_status,
+            region_confidence=region_confidence,
+            region_evidence=cls._optional_string(
+                item.get("region_evidence")
+            ),
         )
 
         return cls._apply_safety_consistency(result)
@@ -654,7 +788,52 @@ Return JSON only using this exact top-level structure:
     def _apply_safety_consistency(
         result: LeadValidationResult,
     ) -> LeadValidationResult:
-        """Prevent contradictory LLM output from becoming a valid lead."""
+        """Apply hard policy rules and prevent contradictory LLM output."""
+
+        # Region eligibility is a hard business rule. A clearly identified
+        # buyer outside the allowed regions is rejected regardless of the
+        # model's original decision.
+        if result.region_status == "unsupported":
+            result.decision = LeadValidationDecision.NOT_A_LEAD
+            region_reason = (
+                "The buyer country is outside the allowed service regions."
+            )
+            if region_reason.casefold() not in result.reason.casefold():
+                result.reason = (
+                    f"{result.reason} Policy enforcement: {region_reason}"
+                ).strip()
+            result.confidence = max(result.confidence, result.region_confidence)
+            return result
+
+        # An unknown buyer country cannot be accepted as a valid lead.
+        if (
+            result.region_status == "unknown"
+            and result.decision == LeadValidationDecision.VALID_LEAD
+        ):
+            result.decision = LeadValidationDecision.MANUAL_REVIEW
+            result.reason = (
+                result.reason
+                + " Policy enforcement: The buyer country could not be "
+                  "established reliably."
+            )
+            result.confidence = min(result.confidence, 0.59)
+            return result
+
+        # A supported result must include the canonical country copied from
+        # the allowed-region list.
+        if (
+            result.region_status == "supported"
+            and not result.canonical_country
+            and result.decision == LeadValidationDecision.VALID_LEAD
+        ):
+            result.decision = LeadValidationDecision.MANUAL_REVIEW
+            result.reason = (
+                result.reason
+                + " Policy enforcement: The region was marked supported "
+                  "without a canonical country."
+            )
+            result.confidence = min(result.confidence, 0.59)
+            return result
 
         if result.decision != LeadValidationDecision.VALID_LEAD:
             return result

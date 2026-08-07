@@ -26,7 +26,9 @@ from module_3.schemas import (
 )
 from module_3.service import LeadAnalysisService
 from module_3.intelligence.service import LeadIntelligenceService
+
 from module_3.discovery.potential_lead_discovery import PotentialLeadDiscovery
+from module_3.discovery.company_discovery import CompanyDiscovery
 
 # ------------------------------
 # Logging setup
@@ -45,6 +47,7 @@ lead_discovery_service: LeadDiscoveryService | None = None
 lead_intelligence_service: LeadIntelligenceService | None = None
 potential_lead_discovery: PotentialLeadDiscovery | None = None
 embedding_validation_result: dict | None = None
+company_discovery_service: CompanyDiscovery | None = None
 
 # ------------------------------
 # Lifespan for service initialisation
@@ -56,6 +59,7 @@ async def lifespan(app: FastAPI):
     global lead_intelligence_service
     global embedding_validation_result
     global potential_lead_discovery
+    global company_discovery_service
 
     logger.info("Starting Triway Lead Intelligence API.")
     logger.info("Loading embedding model.")
@@ -228,6 +232,8 @@ async def lifespan(app: FastAPI):
     # ---- NEW: Create intelligence service for email drafting ----
     lead_intelligence_service = LeadIntelligenceService(llm_model=llm_model)
     logger.info("Lead intelligence service (with email drafting) loaded.")
+
+    # ---- Potential Lead Discovery ----
     potential_lead_discovery = None
     if llm_model is not None:
         potential_lead_discovery = PotentialLeadDiscovery(
@@ -239,6 +245,14 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "Potential lead discovery service disabled because Claude is unavailable."
         )
+
+    # ---- Company Discovery (NEW) ----
+    company_discovery_service = CompanyDiscovery(
+        llm_model=llm_model,
+        search_provider=serpapi,
+    )
+    logger.info("Company discovery service (with Claude) loaded.")
+
     yield
 
     # Cleanup
@@ -248,6 +262,7 @@ async def lifespan(app: FastAPI):
     lead_intelligence_service = None
     embedding_validation_result = None
     potential_lead_discovery = None
+    company_discovery_service = None
 
 # ------------------------------
 # FastAPI app
@@ -441,3 +456,41 @@ def generate_linkedin_message(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=str(exc),
         ) from exc
+
+class CompanyDiscoveryRequest(BaseModel):
+    websites: list[str] | None = None
+    industries: list[str] | None = None
+    countries: list[str] | None = None
+    min_employees: int | None = None
+    max_employees: int | None = None
+
+@app.post("/discover-companies", tags=["Lead Discovery"])
+def discover_companies(request: CompanyDiscoveryRequest) -> dict:
+    if company_discovery_service is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Company discovery service not ready.")
+    criteria = {
+        "industries": request.industries or [],
+        "countries": request.countries or [],
+        "min_employees": request.min_employees,
+        "max_employees": request.max_employees,
+    }
+    results = company_discovery_service.discover(criteria=criteria, websites=request.websites)
+    return {"count": len(results), "companies": results}
+
+class LinkedInAnalyzeRequest(BaseModel):
+    url: str
+    text: str | None = None
+
+@app.post("/analyze-linkedin-profile", tags=["Lead Intelligence"])
+def analyze_linkedin_profile(request: LinkedInAnalyzeRequest) -> dict:
+    if potential_lead_discovery is None:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, detail="Service unavailable.")
+    try:
+        result = potential_lead_discovery.analyze_linkedin_profile(
+            url=request.url,
+            text=request.text,
+        )
+        return result
+    except Exception as exc:
+        logger.exception("LinkedIn profile analysis failed.")
+        raise HTTPException(status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))

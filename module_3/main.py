@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dotenv import load_dotenv
 
 import logging
 import os
@@ -30,6 +31,7 @@ from module_3.intelligence.service import LeadIntelligenceService
 from module_3.discovery.potential_lead_discovery import PotentialLeadDiscovery
 from module_3.discovery.company_discovery import CompanyDiscovery
 
+load_dotenv()
 # ------------------------------
 # Logging setup
 # ------------------------------

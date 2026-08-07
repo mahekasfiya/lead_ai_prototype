@@ -1,4 +1,5 @@
 from __future__ import annotations
+from dotenv import load_dotenv
 
 import logging
 import os
@@ -29,6 +30,9 @@ from module_3.intelligence.service import LeadIntelligenceService
 
 from module_3.discovery.potential_lead_discovery import PotentialLeadDiscovery
 from module_3.discovery.company_discovery import CompanyDiscovery
+
+load_dotenv()
+
 
 # ------------------------------
 # Logging setup
@@ -247,11 +251,16 @@ async def lifespan(app: FastAPI):
         )
 
     # ---- Company Discovery (NEW) ----
-    company_discovery_service = CompanyDiscovery(
-        llm_model=llm_model,
-        search_provider=serpapi,
-    )
-    logger.info("Company discovery service (with Claude) loaded.")
+    if llm_model is not None:
+        company_discovery_service = CompanyDiscovery(
+            llm_model=llm_model,
+            search_provider=serpapi,
+        )
+        logger.info("Company discovery service (with Claude) loaded.")
+
+    else:
+        company_discovery_service=None
+        logger.warning("Company discovery service disabled because Claude is unavailable")
 
     yield
 
